@@ -1,6 +1,13 @@
-# Ignore VCS metadata so the submodule lands in the image as a plain, unversioned tree
+# Patch-repository build context. The Frappe source is the pinned ./frappe
+# submodule; benches init from it, so its source files (socketio.js,
+# package.json, yarn.lock, realtime/, ...) MUST be kept in the context.
+# NOTE: patches/ and scripts/ are COPYed by the Dockerfile builder stage and
+# must remain in context.
 .git
-**/.git
+.github
 **/__pycache__/
 **/*.pyc
-frappe/.git
+.venv
+node_modules
+tests
+*.log

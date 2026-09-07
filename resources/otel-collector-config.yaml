@@ -1,0 +1,47 @@
+# Local OpenTelemetry Collector.
+# Receives OTLP (grpc 4317 / http 4318) from nginx, web and worker containers.
+# Exports to the central collector when CENTRAL_OTLP_ENDPOINT is provided
+# (spans are buffered and retried locally while the central endpoint is down);
+# otherwise falls back to local debug logging only.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 512
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  debug:
+    # detailed: log every span with trace/span IDs and resource attributes
+    # (service.name) so CI can assert trace continuity across the
+    # frappe-nginx and frappe-app legs. Local/debug exporter only — production
+    # forwards via otlp/central, so the extra log noise stays local-dev.
+    verbosity: detailed
+  otlp/central:
+    endpoint: ${env:CENTRAL_OTLP_ENDPOINT}
+    tls:
+      insecure: ${env:CENTRAL_OTLP_INSECURE}
+    sending_queue:
+      enabled: true
+      queue_size: 10000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: ["${env:TRACE_EXPORTERS}"]

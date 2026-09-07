@@ -1,0 +1,227 @@
+services:
+  mariadb:
+    image: mariadb:10.8
+    command:
+    - --character-set-server=utf8mb4
+    - --collation-server=utf8mb4_unicode_ci
+    - --skip-character-set-client-handshake
+    - --skip-innodb-read-only-compressed
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-admin}
+    volumes:
+    - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -u root -p$$MYSQL_ROOT_PASSWORD || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  # Redis split into cache / queue / socketio so scaling workers doesn't
+  # make them contend with each other or with realtime traffic.
+  redis:
+    image: redis:alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Local trace collector: nginx / web / workers push OTLP here. It always
+  # runs; tracing itself is opt-in per endpoint — apps emit spans only when
+  # OTEL_EXPORTER_OTLP_ENDPOINT is set in the environment (e.g.
+  # OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318), otherwise nothing
+  # is traced. The image's built-in configuration is the default. Operators can
+  # select an externally managed file:, env:, http:, or https: configuration
+  # URI with OTEL_COLLECTOR_CONFIG_URI.
+  otel-collector:
+    image: otel/opentelemetry-collector:0.160.0
+    command:
+    - --config=${OTEL_COLLECTOR_CONFIG_URI:-/etc/otelcol/config.yaml}
+    - --set=exporters::debug::verbosity=detailed
+    environment:
+      CENTRAL_OTLP_ENDPOINT: ${CENTRAL_OTLP_ENDPOINT:-localhost:4317}
+      CENTRAL_OTLP_INSECURE: ${CENTRAL_OTLP_INSECURE:-true}
+      TRACE_EXPORTERS: ${TRACE_EXPORTERS:-debug}
+    ports:
+    - "4317:4317"
+    - "4318:4318"
+    restart: unless-stopped
+
+  init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/bin/bash", "/usr/local/bin/init.sh"]
+    environment:
+      SITE_NAME: ${SITE_NAME:-crm.localhost}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+    volumes:
+    - sites-data:/home/frappe/frappe-bench/sites
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: /bin/bash
+    command:
+    - -c
+    - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec gunicorn --chdir=/home/frappe/frappe-bench/sites --bind=0.0.0.0:8000 --threads=4 --workers=2 --worker-class=gthread --worker-tmp-dir=/dev/shm --timeout=120 --preload --config /home/frappe/frappe-bench/apps/frappe/resources/gunicorn-otel-conf.py frappe.otel_wsgi:application'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: frappe-app
+    volumes:
+    - sites-data:/home/frappe/frappe-bench/sites
+    restart: unless-stopped
+    # Safe to scale horizontally, e.g.:
+    #   docker compose up -d --scale web=3
+    # nginx round-robins across replicas via Docker's embedded DNS
+    # since this service publishes no host port of its own.
+    deploy:
+      replicas: 2
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: /bin/bash
+    command:
+    - -c
+    - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench worker'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: frappe-worker-default
+    volumes:
+    - sites-data:/home/frappe/frappe-bench/sites
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  worker-long:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: /bin/bash
+    command:
+    - -c
+    - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench worker --queue long'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: frappe-worker-long
+    volumes:
+    - sites-data:/home/frappe/frappe-bench/sites
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  worker-short:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: /bin/bash
+    command:
+    - -c
+    - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench worker --queue short'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: frappe-worker-short
+    volumes:
+    - sites-data:/home/frappe/frappe-bench/sites
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  schedule:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: /bin/bash
+    command:
+    - -c
+    - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench schedule'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: frappe-scheduler
+    volumes:
+    - sites-data:/home/frappe/frappe-bench/sites
+    restart: unless-stopped
+    # Do NOT scale this above 1 replica — bench schedule is a singleton
+    # cron-style loop; running it twice double-fires scheduled jobs.
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  socketio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: /bin/bash
+    command:
+    - -c
+    - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec node apps/frappe/socketio.js'
+    volumes:
+    - sites-data:/home/frappe/frappe-bench/sites
+    restart: unless-stopped
+    # Do NOT scale this without a sticky-session-aware load balancer —
+    # websocket clients will randomly bounce between replicas otherwise.
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint:
+    - /usr/local/bin/nginx-entrypoint.sh
+    environment:
+      BACKEND: web:8000
+      SOCKETIO: socketio:9000
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      FRAPPE_SITE_NAME_HEADER: ${SITE_NAME:-crm.localhost}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      # The nginx leg exports OTLP/gRPC to the collector's :4317 receiver
+      # (scheme-less host:port — ngx_otel_module rejects a http:// prefix and
+      # silently drops spans if one is present). Explicit injection makes the
+      # gate-off case (empty string) deterministic and lets CI pass the value
+      # directly instead of relying on the entrypoint's re-derivation from
+      # OTEL_EXPORTER_OTLP_ENDPOINT (which points at the HTTP :4318 receiver).
+      NGINX_OTEL_ENDPOINT: ${NGINX_OTEL_ENDPOINT:-}
+      OTEL_SERVICE_NAME: frappe-nginx
+    volumes:
+    - sites-data:/home/frappe/frappe-bench/sites:ro
+    ports:
+    - "${HTTP_PORT:-8085}:8080"
+    depends_on:
+      otel-collector:
+        condition: service_started
+        required: false
+      web:
+        condition: service_started
+      socketio:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  mariadb-data: null
+  sites-data: null
+  redis-data: null

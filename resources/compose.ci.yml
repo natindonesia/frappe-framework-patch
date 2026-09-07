@@ -1,0 +1,37 @@
+# CI-only overlay for the build-docker.yml compose-integration job.
+# Usage: docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml up -d
+# NOTE: requires compose >= v2.24 for the !override tag (v5.3.1 on this runner).
+#
+# IMAGE TAGGING (why every app/nginx service pins image: frappe:latest):
+# test-build already builds the root Dockerfile and --load's it as frappe:latest
+# (with the local layer cache). Pinning these services to that one tag makes the
+# compose-integration job REUSE it instead of rebuilding all 8 service images
+# from source into throwaway ci-otel-* tags every run. If the tag is ever absent
+# (e.g. a different self-hosted runner), compose falls back to building from the
+# base file's `build:` section — same Dockerfile, so behavior is identical.
+# Net effect: "build once, reuse across the build -> compose-integration stages".
+services:
+  otel-collector:
+    ports: !override []   # keep OTLP internal to the compose network; avoids host port collisions on shared runners
+  init:
+    image: frappe:latest
+  web:
+    image: frappe:latest
+    deploy:
+      replicas: 1         # faster bring-up; horizontal scaling is not under test here
+  worker:
+    image: frappe:latest
+    deploy:
+      replicas: 1
+  worker-long:
+    image: frappe:latest
+  worker-short:
+    image: frappe:latest
+    deploy:
+      replicas: 1
+  schedule:
+    image: frappe:latest
+  socketio:
+    image: frappe:latest
+  nginx:
+    image: frappe:latest

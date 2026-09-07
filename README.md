@@ -28,25 +28,37 @@ push anything. Use `--push` only after authenticating Docker to the registry; us
 
 ## GitHub Actions
 
+The Docker/CI workflows are the battle-tested originals from the parent Frappe
+repo, adapted to this patch repository's submodule/patch model (the Dockerfile
+applies `./patches` to `./frappe` before `bench init`; the build context vendors
+the required `resources/`, `docker-compose.yml`, `Dockerfile.granian`, and the
+custom OTEL overlay files in `runtime/`).
+
+- `build-docker.yml` — on push / pull_request. Builds the patched image, runs
+  the runtime + compose/OTEL integration tests, and on push pushes
+  `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest` and
+  `.../frappe:<short-sha>` (no push on pull_request).
+- `build-granian.yml` — optional Granian runtime build + compose test. NEVER
+  pushes.
 - `update-upstream.yml` is manual (`workflow_dispatch`). It advances `frappe/` to the
   latest `origin/version-16`, validates the patch set, and pushes only the parent
   repository's gitlink commit when validation succeeds.
-- `build-push.yml` runs on pushes to `main`, validates the patches, then builds and
-  pushes `registry.digitalocean.com/natindonesia/frappe`.
 
-Configure the repository secret `DIGITALOCEAN_ACCESS_TOKEN` with a DigitalOcean
-Container Registry token. It is used only by the registry login action and is not
-printed by the workflow.
+Registry configuration (same as the parent workflow): set the variables
+`REGISTRY_URL` (default `registry.digitalocean.com`) and `REGISTRY_NAMESPACE`
+(default `natindonesia`), and the secrets `REGISTRY_USERNAME`/`REGISTRY_PASSWORD`
+(or the `DIGITALOCEAN_EMAIL`/`DIGITALOCEAN_ACCESS_TOKEN` fallbacks). Secrets are
+used only by the registry login action and are never printed.
 
-Images are published with an immutable tag of the form:
+Images are published as:
 
 ```text
-registry.digitalocean.com/natindonesia/frappe:<upstream-short-sha>-<patch-repo-short-sha>
+${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest
+${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:<github-sha-prefix>
 ```
 
-`latest` is only a convenience alias. Production deployments should pin the immutable
-tag or, preferably, the image digest. The image labels record the upstream and patch
-repository revisions for provenance and rollback.
+`latest` is only a convenience alias. Production deployments should pin the
+short-SHA tag or, preferably, the image digest.
 
 ## Patch scope
 

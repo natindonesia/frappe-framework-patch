@@ -1,37 +1,33 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.4
 # =============================================================================
-# Granian alternative runtime variant.
+# Granian alternative runtime — OPTIONAL, opt-in CI build. NOT the default.
 #
-# OPTIONAL alternative runtime, kept OUT of the root Dockerfile so the default
-# (wheel + OTel base image) pipeline is untouched. This image is a THIN LAYER
-# on the canonical patched-Frappe base image (built from the root Dockerfile as
-# `frappe:latest` earlier in the same CI job) and additionally installs the
-# Granian Rust WSGI/ASGI server into the same Python environment:
+# Extends the canonical `frappe` image (Dockerfile, built and --load'ed as
+# frappe:latest by the test-build job) and additionally installs the Granian
+# Rust WSGI/ASGI server into the bench venv, so the `web` service can serve
+# the app via Granian instead of gunicorn:
 #
-#   granian --interface wsgi --host 0.0.0.0 --port 8000 \
-#     --workers 2 --blocking-threads 4 frappe.app:application
+#   env/bin/granian --interface wsgi --host 0.0.0.0 --port 8000 \
+#     --workers 2 --blocking-threads 4 frappe.otel_wsgi:application
 #
-# The WSGI application is unchanged (`frappe.app:application`, with OTel wrap
-# when OTEL_EXPORTER_OTLP_ENDPOINT is set). Only the server process differs;
-# nothing in frappe/ changes.
+# The app entrypoint (frappe.otel_wsgi:application) is unchanged and shared
+# with gunicorn — it only wraps the app with OpenTelemetry when the
+# OTEL_EXPORTER_OTLP_ENDPOINT env is set. So the runtime swap is confined to
+# the server process; nothing in frappe/ differs.
 #
-# BASE IMAGE: `frappe:latest` MUST already exist locally (built by the root
-# Dockerfile in the same CI job). This image is CI-only by default; it is
-# published separately with the same immutable-tag convention as the base.
+# BASE IMAGE: `frappe:latest` must already exist locally (this is a CI-only
+# image). It is the freshly-built canonical image --load'ed by the
+# test-build job on the same self-hosted runner. `needs: test-build` in the
+# granian-build job guarantees ordering. This image is only used by CI and is
+# NEVER pushed to a registry.
 # =============================================================================
 FROM frappe:latest AS granian
 
-ARG UPSTREAM_SHA=unknown
-ARG PATCH_REPO_SHA=unknown
+USER frappe
 
-# Install Granian into the same Python env that pip created for the framework
-# (the base image installs the patched frappe wheel into site-packages).
-RUN pip install --no-cache-dir granian
-
-LABEL org.opencontainers.image.title="frappe-framework-patch (granian)"
-LABEL org.opencontainers.image.description="Patched Frappe framework base image with Granian server (version-16)"
-LABEL org.opencontainers.image.source="https://github.com/natindonesia/frappe-framework-patch"
-LABEL org.opencontainers.image.revision="${PATCH_REPO_SHA}"
-LABEL org.natindonesia.frappe.upstream-sha="${UPSTREAM_SHA}"
-LABEL org.natindonesia.frappe.patch-sha="${PATCH_REPO_SHA}"
-LABEL org.natindonesia.frappe.variant="granian"
+# Install Granian into the bench venv that bench init created.
+RUN /home/frappe/frappe-bench/env/bin/pip install \
+      --no-cache-dir \
+      granian \
+    && mkdir -p /home/frappe/frappe-bench/logs /home/frappe/logs \
+    && chown frappe:frappe /home/frappe/frappe-bench/logs /home/frappe/logs

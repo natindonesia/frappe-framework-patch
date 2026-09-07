@@ -1,0 +1,60 @@
+# CI-only overlay for the build-docker.yml granian-build job.
+# Usage: docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml \
+#            -f resources/compose.granian-ci.yml up -d
+#
+# OPTIONAL, opt-in. Brings up the FULL docker compose stack but serves the app
+# with GRANIAN instead of gunicorn, to prove the alternative runtime boots,
+# provisions a site and answers requests. Required compose >= v2.24 for the
+# !override tag (v5.3.1 on this runner).
+#
+# IMAGE TAGGING: every app/nginx service pins image: frappe-granian:latest
+# (built by the granian-build job, which `needs: test-build`). This swaps the
+# whole stack onto the Granian variant with one tag.
+#
+# THE ONE SWAP: only the `web` service command differs — granian replaces the
+# gunicorn invocation. Same entrypoint object (frappe.otel_wsgi:application),
+# same host/port/worker shape (2 workers x 4 blocking-threads), same OTEL
+# env plumbing. Everything else in the stack is byte-identical to the gunicorn
+# path, so a green granian build is a genuine server-layer substitution.
+services:
+  init:
+    image: frappe-granian:latest
+
+  web:
+    image: frappe-granian:latest
+    # entrypoint: /bin/bash is inherited from docker-compose.yml; pass only the
+    # `-c` args (matches the gunicorn command shape exactly).
+    #
+    # Granian invocation validates the two findings from local smoke tests:
+    #  - cwd MUST be sites/ (the function of gunicorn's --chdir=.../sites), else
+    #    Frappe cannot resolve the site and every route answers 404.
+    #  - target MUST be the ABSOLUTE file path to otel_wsgi.py; the import-spec
+    #    form `frappe.otel_wsgi:application` mis-resolves (sites/__init__.py
+    #    hijacks it as sites.frappe.otel_wsgi).
+    command:
+    - -c
+    - 'cd /home/frappe/frappe-bench/sites && exec /home/frappe/frappe-bench/env/bin/granian --interface wsgi --host 0.0.0.0 --port 8000 --workers 2 --blocking-threads 4 /home/frappe/frappe-bench/apps/frappe/frappe/otel_wsgi.py:application'
+    deploy:
+      replicas: 1
+
+  worker:
+    image: frappe-granian:latest
+    deploy:
+      replicas: 1
+
+  worker-long:
+    image: frappe-granian:latest
+
+  worker-short:
+    image: frappe-granian:latest
+    deploy:
+      replicas: 1
+
+  schedule:
+    image: frappe-granian:latest
+
+  socketio:
+    image: frappe-granian:latest
+
+  nginx:
+    image: frappe-granian:latest

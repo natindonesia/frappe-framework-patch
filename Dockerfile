@@ -1,109 +1,229 @@
-# syntax=docker/dockerfile:1
-#
-# frappe-framework-patch -- reproducible base image containing the patched Frappe
-# framework (version-16 at the pinned submodule SHA) plus OpenTelemetry deps.
+# syntax=docker/dockerfile:1.4
+ARG PYTHON_VERSION=3.14.2
+ARG DEBIAN_BASE=bookworm
+FROM python:${PYTHON_VERSION}-slim-${DEBIAN_BASE} AS base
 
-# This repo is the patch/build layer: it installs the Frappe Python package from the
-# pinned ./frappe submodule, applies our ./patches,and layers OpenTelemetry packages so
-# W3C trace-context propagation works out of the box. Reproducible from:
-#   `git submodule update --init --recursive` + this Dockerfile.
+ARG WKHTMLTOPDF_VERSION=0.12.6.1-3
+ARG WKHTMLTOPDF_DISTRO=bookworm
+ARG INSTALL_CHROMIUM=true
 
-# Python version: the pinned v16.33.0 declares `requires-python = >=3.14,<3.15`,
-# so BOTH build and runtime stages run python:3.14-slim-bookworm to stay in that window.
-
-# Build labels carry the exact upstream + patch SHAs (see scripts/build.sh),and the
-# immutable tag policy is `<upstream-short>-<patch-short>`; see README for tag guidance.
-
-
-# Build args (set by scripts/build.sh / CI)：
-#   UPSTREAM_SHA  - short SHA of the pinned ./frappe submodule commit
-#   PATCH_REPO_SHA - short SHA of this (patch) repository's HEAD
-#   OTEL=1         - install OpenTelemetry api+sdk+otlp (default on for this image)
-
-# ---- stage  1: build a wheel from the patched framework ----
-FROM python:3.14-slim-bookworm AS builder
-
-ARG OTEL=1
-ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
-
-# System deps required to compile frappe's binary dependencies from source.
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        build-essential \
-        pkg-config \
-        python3-dev \
-        default-libmysqlclient-dev \
-        libmariadb-dev \
-        libjpeg62-turbo-dev \
-        zlib1g-dev \
-        libffi-dev \
-        libxml2-dev \
-        libxslt1-dev \
-        libcairo2-dev \
-        libpango1.0-dev \
-        libgdk-pixbuf2.0-dev \
-        libpq-dev \
+# =============================================================================
+# Layer 1 — Runtime system dependencies
+# Changes only when base image bumps or we add/remove a package. Very stable.
+# =============================================================================
+RUN useradd -ms /bin/bash frappe \
+    && apt-get update \
+    && apt-get install --no-install-recommends -y \
         curl \
-        git; \
-    rm -rf /var/lib/apt/lists/*
+        git \
+        vim \
+        gettext-base \
+        file \
+        # weasyprint dependencies
+        libpango-1.0-0 \
+        libharfbuzz0b \
+        libpangoft2-1.0-0 \
+        libpangocairo-1.0-0 \
+        # For backups
+        restic \
+        gpg \
+        # MariaDB
+        mariadb-client \
+        less \
+        # Postgres
+        libpq-dev \
+        postgresql-client \
+        # For healthcheck
+        wait-for-it \
+        jq \
+        # For MIME type detection
+        media-types
 
-WORKDIR /build
- # Bring the clean pinned submodule tree, patches,and helpers.
-COPY frappe/ ./frappe/
-COPY patches/ ./patches/
-COPY scripts/ ./scripts/
+# =============================================================================
+# Layer 1b — nginx from nginx.org with the prebuilt OpenTelemetry dynamic
+# module. Debian's stock nginx (1.22) ships no otel module, and a dynamic
+# module's ABI must match the exact nginx binary it loads into. nginx.org
+# packages nginx-module-otel built against their own nginx, installed together
+# here so the ABI always matches. Pinned to the stable branch; bump together
+# with DEBIAN_BASE.
+# =============================================================================
+ARG DEBIAN_BASE=bookworm
+RUN apt-get update \
+    && curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/debian ${DEBIAN_BASE} nginx" > /etc/apt/sources.list.d/nginx.list \
+    && printf "Package: *\nPin: origin nginx.org\nPin-Priority: 900\n" > /etc/apt/preferences.d/nginx \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+        nginx=1.28.* \
+        nginx-module-otel=1.28.* \
+    && rm -rf /var/lib/apt/lists/*
+# =============================================================================
+# Layer 2 — Node.js via nvm
+# Changes when NODE_VERSION changes. nvm install.sh is fetched from GitHub so
+# pinning the version here is the sole cache-control.
+# =============================================================================
+ARG NODE_VERSION=24.13.0
+ENV NVM_DIR=/home/frappe/.nvm
+ENV PATH=${NVM_DIR}/versions/node/v${NODE_VERSION}/bin/:${PATH}
 
-# Apply our patches to the copied framework tree (no .git required at build time).
-RUN chmod +x ./scripts/apply-patches.sh \
-    && ./scripts/apply-patches.sh
+RUN mkdir -p ${NVM_DIR} \
+    && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash \
+    && . ${NVM_DIR}/nvm.sh \
+    && nvm install ${NODE_VERSION} \
+    && nvm use v${NODE_VERSION} \
+    && npm install -g yarn \
+    && corepack enable pnpm \
+    && nvm alias default v${NODE_VERSION} \
+    && rm -rf ${NVM_DIR}/.cache \
+    && echo 'export NVM_DIR="/home/frappe/.nvm"' >> /home/frappe/.bashrc \
+    && echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm' >> /home/frappe/.bashrc \
+    && echo '[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion' >> /home/frappe/.bashrc \
+    && echo 'export PATH="${NVM_DIR}/versions/node/v'${NODE_VERSION}'/bin:${PATH}"' >> /home/frappe/.profile
 
-# Install the patched framework as a wheel (--no-deps: just the framework itself;
-# its runtime dependencies are installed in the runtime stage from the index).
-RUN pip install --upgrade pip setuptools wheel "flit_core>=3.4,<4" \
-    && pip wheel --use-pep517 --no-deps --no-build-isolation -w /build/wheels ./frappe
+# =============================================================================
+# Layer 3 — wkhtmltopdf + chromium-headless-shell
+# Changes when WKHTMLTOPDF_VERSION changes. Independent of Node version.
+# =============================================================================
+RUN apt-get update \
+    && if [ "$(uname -m)" = "aarch64" ]; then export ARCH=arm64; fi \
+    && if [ "$(uname -m)" = "x86_64" ]; then export ARCH=amd64; fi \
+    && downloaded_file=wkhtmltox_${WKHTMLTOPDF_VERSION}.${WKHTMLTOPDF_DISTRO}_${ARCH}.deb \
+    && curl -sLO https://github.com/wkhtmltopdf/packaging/releases/download/$WKHTMLTOPDF_VERSION/$downloaded_file \
+    && apt-get install -y ./$downloaded_file \
+    && rm $downloaded_file \
+    && if [ "$INSTALL_CHROMIUM" != "false" ]; then \
+        DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+        chromium-headless-shell; \
+    fi \
+    && rm -rf /var/lib/apt/lists/*
 
-# ---- stage 2: runtime image with the patched frappe + otel ----
-FROM python:3.14-slim-bookworm
+# =============================================================================
+# Layer 4 — frappe-bench (Python) + nginx config for non-root
+# Changes when frappe-bench releases a new version. Independent of Node or PDF.
+# =============================================================================
+COPY resources/nginx-template.conf /templates/nginx/frappe.conf.template
+COPY resources/nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
 
-ARG OTEL=1
-ARG UPSTREAM_SHA=unknown
-ARG PATCH_REPO_SHA=unknown
+RUN pip3 install frappe-bench \
+    && chmod +x /usr/local/bin/nginx-entrypoint.sh \
+    && rm -fr /etc/nginx/sites-enabled/default \
+    && rm -f /etc/nginx/conf.d/default.conf \
+    && mkdir -p /etc/nginx/snippets \
+    && sed -i '/user www-data/d' /etc/nginx/nginx.conf \
+    && ln -sf /dev/stdout /var/log/nginx/access.log \
+    && ln -sf /dev/stderr /var/log/nginx/error.log \
+    && touch /run/nginx.pid \
+    && chown -R frappe:frappe /templates/nginx \
+    && chown -R frappe:frappe /etc/nginx/conf.d \
+    && chown -R frappe:frappe /etc/nginx/nginx.conf \
+    && chown -R frappe:frappe /etc/nginx/snippets \
+    && chown -R frappe:frappe /var/log/nginx \
+    && mkdir -p /var/lib/nginx /var/cache/nginx \
+    && chown -R frappe:frappe /var/lib/nginx /var/cache/nginx \
+    && chown -R frappe:frappe /run/nginx.pid
 
-ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+# =============================================================================
+# Build stage — build-time C toolchain and headers
+# Changes only when we add/remove a build dep. NOT in final image.
+# =============================================================================
+FROM base AS build
 
-COPY --from=builder /build/wheels /wheels
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+        wget \
+        # psycopg2 / C extensions
+        libffi-dev \
+        liblcms2-dev \
+        libldap2-dev \
+        libmariadb-dev \
+        libsasl2-dev \
+        libtiff5-dev \
+        libwebp-dev \
+        pkg-config \
+        redis-tools \
+        rlwrap \
+        tk8.6-dev \
+        cron \
+        # pandas / numpy
+        gcc \
+        build-essential \
+        libbz2-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Runtime system libs needed by frappe's compiled deps, plus the tools pip needs
-# to build the declared sdist dependencies (mysqlclient) and git+ dependencies
-# (PyPika, gunicorn) of the frappe wheel at runtime.
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        libmariadb3 libmagic1 libcairo2 libpango-1.0-0 libpangoft2-1.0-0 \
-        shared-mime-info fonts-dejavu-core git \
-        build-essential pkg-config default-libmysqlclient-dev; \
-    rm -rf /var/lib/apt/lists/*
+# =============================================================================
+# Builder stage — patched Frappe source + bench init
+# Changes on every source push. This is the only frequently-invalidated layer.
+#
+# Patch-repo adaptation: this repository has no vendored Frappe tree at the
+# build-context root. The Frappe source is the pinned ./frappe submodule. We
+# copy its tree, apply ./patches (scripts/apply-patches.sh), then bench init
+# from the patched tree — identical to the upstream Dockerfile's flow, which
+# bench-inits from the repo root.
+# =============================================================================
+FROM build AS builder
 
-# Install the patched frappe wheel plus its declared runtime dependencies.
-RUN pip install --upgrade pip \
-    && pip install /wheels/frappe-*.whl
+# Assemble patched Frappe source from the pinned submodule + patch set.
+COPY --chown=frappe:frappe frappe/ /tmp/frappe/
+COPY --chown=frappe:frappe patches/ /tmp/patches/
+COPY --chown=frappe:frappe scripts/ /tmp/scripts/
+# Drop the submodule's .git gitlink (a broken pointer in the container) so
+# apply-patches.sh runs in plain-copy mode and bench init copies the tree.
+RUN rm -f /tmp/frappe/.git \
+    && chmod +x /tmp/scripts/apply-patches.sh \
+    && /tmp/scripts/apply-patches.sh
 
-# OpenTelemetry deps (optional; default on). Installed in the runtime so the
-# trace-context feature works out of the box; disabled vi FRAPPE_DISABLE_OTEL=1.
-RUN if [ "$OTEL" = "1" ]; then \
-        pip install \
-            opentelemetry-api \
-            opentelemetry-sdk \
-            opentelemetry-exporter-otlp; \
-    fi
+RUN su - frappe -c 'git config --global --add safe.directory "*"' \
+    && su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:$PATH && bench init \
+      --frappe-path=/tmp/frappe \
+      --no-procfile \
+      --no-backups \
+      --skip-redis-config-generation \
+      --verbose \
+      /home/frappe/frappe-bench' \
+    && rm -rf /tmp/frappe /tmp/patches /tmp/scripts \
+    && cd /home/frappe/frappe-bench \
+    && echo "{}" > sites/common_site_config.json \
+    && find apps -mindepth 1 -path "*/.git" -exec rm -rf {} +
 
-# ---- labels & metadata ----
-LABEL org.opencontainers.image.title="frappe-framework-patch"
-LABEL org.opencontainers.image.description="Patched Frappe framework base image (version-16)"
-LABEL org.opencontainers.image.source="https://github.com/natindonesia/frappe-framework-patch"
-LABEL org.opencontainers.image.revision="${PATCH_REPO_SHA}"
-LABEL org.natindonesia.frappe.upstream-sha="${UPSTREAM_SHA}"
-LABEL org.natindonesia.frappe.patch-sha="${PATCH_REPO_SHA}"
+# opentelemetry packages into the bench virtualenv created by bench init.
+# Separate layer: only re-runs when the bench init layer above changes.
+RUN su - frappe -c '/home/frappe/frappe-bench/env/bin/pip install \
+      opentelemetry-sdk \
+      opentelemetry-api \
+      opentelemetry-exporter-otlp-proto-http \
+      opentelemetry-instrumentation-wsgi'
+
+# Overlay the OTEL emitter files onto the bench tree. bench init git-clones
+# the app, so uncommitted files would otherwise never reach the image and
+# gunicorn would crash-loop on the missing gunicorn-otel-conf.py. COPY from
+# the build context wins over the git-cloned copies, so this stays correct
+# even after these files are eventually committed (identical content).
+# Patch-repo adaptation: these custom overlay files are vendored in ./runtime
+# (they are not part of the pristine upstream submodule).
+COPY --chown=frappe:frappe runtime/otel.py /home/frappe/frappe-bench/apps/frappe/frappe/otel.py
+COPY --chown=frappe:frappe runtime/otel_wsgi.py /home/frappe/frappe-bench/apps/frappe/frappe/otel_wsgi.py
+COPY --chown=frappe:frappe runtime/test_otel.py /home/frappe/frappe-bench/apps/frappe/frappe/tests/test_otel.py
+COPY --chown=frappe:frappe resources/gunicorn-otel-conf.py /home/frappe/frappe-bench/apps/frappe/resources/gunicorn-otel-conf.py
+
+# =============================================================================
+# Final stage — runtime only, no build deps
+# =============================================================================
+FROM base AS frappe
+
+USER frappe
+
+COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
+
+WORKDIR /home/frappe/frappe-bench
+
+RUN echo "echo \"Commands restricted in production container, Read FAQ before you proceed: https://frappe.io/ctr-faq\"" >> ~/.bashrc
+
+VOLUME [ \
+  "/home/frappe/frappe-bench/sites", \
+  "/home/frappe/frappe-bench/logs" \
+]
+
+# Entrypoint script + DB-user fixup for the compose `init` service
+# (entrypoint: /bin/bash /usr/local/bin/init.sh) and the scripts it invokes.
+COPY --chmod=0755 resources/init.sh /usr/local/bin/init.sh
+COPY --chmod=0755 resources/fix-db-users.sh /scripts/fix-db-users.sh
