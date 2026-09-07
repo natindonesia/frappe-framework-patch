@@ -97,13 +97,14 @@ jobs:
 
       - name: Verify Granian serves a WSGI app end-to-end
         run: |
-          docker run --rm frappe-granian:latest bash -c '
+          set -euo pipefail
+          # Write the WSGI app on the host and bind-mount it (read-only) into the
+          # container. Avoids a nested heredoc inside the container's `bash -c`
+          # single-quoted string, where the YAML block indentation would de-indent
+          # the closing delimiter and swallow the rest of the script.
+          python -c "open('/tmp/hwapp.py','w').write('def application(environ, start_response):\\n    start_response(\"200 OK\", [(\"Content-Type\", \"text/plain\")])\\n    return [b\"granian-ok\"]\\n')"
+          docker run --rm -v /tmp/hwapp.py:/tmp/hwapp.py:ro frappe-granian:latest bash -c '
             set -euo pipefail
-            cat > /tmp/hwapp.py <<PY
-            def application(environ, start_response):
-                start_response("200 OK", [("Content-Type", "text/plain")])
-                return [b"granian-ok"]
-            PY
             cd /tmp
             granian --interface wsgi --host 127.0.0.1 --port 8355 --workers 1 \
               hwapp:application & srvc=$!

@@ -70,7 +70,8 @@ jobs:
 
       - name: Test queue runtime
         run: |
-          docker run --rm frappe:latest python -m frappe.utils.bench_helper frappe worker --help
+          docker run --rm frappe:latest bash -c 'echo frappe > apps.txt &&
+            python -m frappe.utils.bench_helper frappe worker --help'
 
       - name: Image size report
         run: |
