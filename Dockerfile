@@ -76,13 +76,15 @@ ENV PYTHONUNBUFFERED=1 \
 
 COPY --from=builder /build/wheels /wheels
 
-# Minimal runtime system libs needed by frappe's compiled deps. `git` lets pip
-# install the declared PyPika git+ dependency of the frappe wheel at runtime.
+# Runtime system libs needed by frappe's compiled deps, plus the tools pip needs
+# to build the declared sdist dependencies (mysqlclient) and git+ dependencies
+# (PyPika, gunicorn) of the frappe wheel at runtime.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         libmariadb3 libmagic1 libcairo2 libpango-1.0-0 libpangoft2-1.0-0 \
-        shared-mime-info fonts-dejavu-core git; \
+        shared-mime-info fonts-dejavu-core git \
+        build-essential pkg-config default-libmysqlclient-dev; \
     rm -rf /var/lib/apt/lists/*
 
 # Install the patched frappe wheel plus its declared runtime dependencies.
