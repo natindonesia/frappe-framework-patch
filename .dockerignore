@@ -1,0 +1,6 @@
+# Ignore VCS metadata so the submodule lands in the image as a plain, unversioned tree
+.git
+**/.git
+**/__pycache__/
+**/*.pyc
+frappe/.git

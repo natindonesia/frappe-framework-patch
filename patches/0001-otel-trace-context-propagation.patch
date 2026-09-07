@@ -1,0 +1,123 @@
+diff --git a/frappe/integrations/trace_context.py b/frappe/integrations/trace_context.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8f0e139f0bbcf214787d60d80b591a3f88972b05
+--- /dev/null
++++ b/frappe/integrations/trace_context.py
+@@ -0,0 +1,57 @@
++"""W3C trace-context propagation (OTel-optional) for Frappe RQ background jobs..."""
++
++import os
++from typing import Any
++
++_DISABLE = "FRAPPE_DISABLE_OTEL"
++
++
++def is_available() -> bool:
++    if os.environ.get(_DISABLE, "0") == "1":
++        return False
++    try:
++        import opentelemetry  # noqa: F401
++        return True
++    except Exception:
++        return False
++
++
++def get_trace_context() -> dict:
++    if not is_available():
++        return {}
++    try:
++        from opentelemetry import trace
++        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
++
++        if not trace.get_current_span().is_recording():
++            return {}
++
++        carrier = {}
++        TraceContextTextMapPropagator().inject(carrier=carrier)
++        return carrier
++    except Exception:
++        return {}
++
++
++def attach_trace_context(carrier) -> Any:
++    if not carrier or not is_available():
++        return None
++    try:
++        from opentelemetry.context import attach, get_current
++        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
++
++
++        ctx = TraceContextTextMapPropagator().extract(carrier=carrier, context=get_current())
++        return attach(ctx)
++    except Exception:
++        return None
++
++
++def detach_trace_context(token) -> None:
++    if not token:
++        return
++    try:
++        from opentelemetry.context import detach
++        detach(token)
++    except Exception:
++        return
+\ No newline at end of file
+diff --git a/frappe/utils/background_jobs.py b/frappe/utils/background_jobs.py
+index a5f5b206d64d71a79dfb4ce81d899fe219299196..992762bcc7f830de661d94941658e865155ddde0 100644
+--- a/frappe/utils/background_jobs.py
++++ b/frappe/utils/background_jobs.py
+@@ -27,6 +27,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fi
+ import frappe
+ import frappe.monitor
+ from frappe import _
++from frappe.integrations.trace_context import attach_trace_context, detach_trace_context, get_trace_context
+ from frappe.utils import CallbackManager, cint, get_bench_id, get_sites
+ from frappe.utils.caching import site_cache
+ from frappe.utils.commands import log
+@@ -184,6 +185,8 @@ def enqueue(
+ 		"kwargs": kwargs,
+ 	}
+ 
++	queue_args["_trace_context"] = get_trace_context()
++
+ 	on_failure = on_failure or truncate_failed_registry
+ 
+ 	if at_front_when_starved and q.count > QUEUE_STARVATION_THRESHOLD:
+@@ -236,9 +239,10 @@ def run_doc_method(doctype, name, doc_method, **kwargs):
+ 	getattr(frappe.get_doc(doctype, name), doc_method)(**kwargs)
+ 
+ 
+-def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True, retry=0):
++def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True, retry=0, _trace_context: dict | None = None):
+ 	"""Executes job in a worker, performs commit/rollback and logs if there is any error"""
+ 	retval = None
++	attach_token = None
+ 
+ 	if is_async:
+ 		frappe.init(site, force=True, is_job=True)
+@@ -266,6 +270,8 @@ def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True,
+ 		after_job=CallbackManager(),
+ 	)
+ 
++	attach_token = attach_trace_context(_trace_context)
++
+ 	for before_job_task in frappe.get_hooks("before_job"):
+ 		frappe.call(before_job_task, method=method_name, kwargs=kwargs, transaction_type="job")
+ 
+@@ -287,7 +293,7 @@ def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True,
+ 			frappe.destroy()
+ 			time.sleep(retry + 1)
+ 
+-			return execute_job(site, method, event, job_name, kwargs, is_async=is_async, retry=retry + 1)
++			return execute_job(site, method, event, job_name, kwargs, is_async=is_async, retry=retry + 1, _trace_context=_trace_context)
+ 
+ 		else:
+ 			frappe.log_error(title=method_name)
+@@ -306,6 +312,7 @@ def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True,
+ 		return retval
+ 
+ 	finally:
++		detach_trace_context(attach_token)
+ 		if not hasattr(frappe.local, "site"):
+ 			frappe.init(site, force=True, is_job=True)
+ 			frappe.connect()

@@ -1,0 +1,75 @@
+# Migrated upstream submodule update workflow.
+# The update is accepted only when the local patch set still applies and tests pass.
+name: Update Frappe upstream
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: update-frappe-upstream
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_BRANCH: version-16
+
+jobs:
+  update:
+    name: Update and validate Frappe submodule
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patch repository with submodule
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Update Frappe submodule
+        id: upstream
+        run: |
+          old_sha="$(git -C frappe rev-parse HEAD)"
+          git -C frappe fetch --depth=1 origin "$UPSTREAM_BRANCH"
+          git -C frappe reset --hard FETCH_HEAD
+          new_sha="$(git -C frappe rev-parse HEAD)"
+          echo "old_sha=$old_sha" >> "$GITHUB_OUTPUT"
+          echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
+          echo "Frappe: $old_sha -> $new_sha"
+
+      - name: Validate migrated patches
+        run: |
+          bash -n scripts/*.sh tests/run_tests.sh
+          bash scripts/verify-patches.sh
+          bash tests/run_tests.sh --no-otel
+
+      - name: Commit and push validated gitlink
+        env:
+          OLD_SHA: ${{ steps.upstream.outputs.old_sha }}
+          NEW_SHA: ${{ steps.upstream.outputs.new_sha }}
+        run: |
+          if [[ "$OLD_SHA" == "$NEW_SHA" ]]; then
+            echo "Already at latest $UPSTREAM_BRANCH ($NEW_SHA)."
+            exit 0
+          fi
+          git add frappe
+          git commit -m "chore(submodule): bump frappe to ${NEW_SHA:0:12}"
+          git push origin HEAD:main
+          echo "Updated parent repository gitlink to $NEW_SHA"
+
+      - name: Summary
+        env:
+          OLD_SHA: ${{ steps.upstream.outputs.old_sha }}
+          NEW_SHA: ${{ steps.upstream.outputs.new_sha }}
+        run: |
+          {
+            echo "## Upstream update"
+            echo "- Previous: \\`$OLD_SHA\\`"
+            echo "- Validated: \\`$NEW_SHA\\`"
+            echo "- Patches: applied and tests passed"
+          } >> "$GITHUB_STEP_SUMMARY"

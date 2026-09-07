@@ -1,0 +1,85 @@
+name: build-push
+
+# On every push to main: validate the patches against the pinned submodule, apply them
+# in an isolated way (temp-copy tests + the Docker build context), then build and push the
+# these base image with an immutable tag encoding the upstream SHAA and this repo's SHA,
+# plus a floating latest tag. The only secret used is DIGITALOCEAN_ACCESS_TOKEN,,passed via
+# the docker/login action (never echoed or printed).
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: build-push-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: registry.digitalocean.com/natindonesia/frappe
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute build SHAs and immutable tag
+        id: shas
+        run: |
+          UPSTREAM_SHA="$(git -C frappe rev-parse --short=12 HEAD)"
+          PATCH_REPO_SHA="$(git rev-parse --short=12 HEAD)"
+          echo "UPSTREAM_SHA=${UPSTREAM_SHA}" >> "$GITHUB_ENV"
+          echo "PATCH_REPO_SHA=${PATCH_REPO_SHA}" >> "$GITHUB_ENV"
+          echo "IMMUTABLE_TAG=${UPSTREAM_SHA}-${PATCH_REPO_SHA}" >> "$GITHUB_ENV"
+          echo ">> upstream frappe $UPSTREAM_SHA | patch repo $PATCH_REPO_SHA"
+
+      - name: Validate patches against the pinned submodule (non-destructive)
+        run: |
+          bash tests/run_tests.sh --no-otel
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DigitalOcean Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.digitalocean.com
+          username: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          password: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Build and push immutable tag + latest
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            UPSTREAM_SHA=${{ env.UPSTREAM_SHA }}
+            PATCH_REPO_SHA=${{ env.PATCH_REPO_SHA }}
+          tags: |
+            ${{ env.REGISTRY }}:${{ env.IMMUTABLE_TAG }}
+            ${{ env.REGISTRY }}:latest
+          labels: |
+            org.opencontainers.image.title=frappe-framework-patch
+            org.opencontainers.image.description=Patched Frappe framework base image (version-16)
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.natindonesia.frappe.upstream-sha=${{ env.UPSTREAM_SHA }}
+            org.natindonesia.frappe.patch-sha=${{ env.PATCH_REPO_SHA }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summarize release
+        run: |
+          echo "## Release" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed: \`${{ env.REGISTRY }}:${{ env.IMMUTABLE_TAG }}\` and \`latest\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Upstream frappe SHAA: \`${{ env.UPSTREAM_SHA }}\`" >> "$GITHUB_STEP_SUMMARY"
