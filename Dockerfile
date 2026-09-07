@@ -60,7 +60,7 @@ RUN chmod +x ./scripts/apply-patches.sh \
 
 # Install the patched framework as a wheel (--no-deps: just the framework itself;
 # its runtime dependencies are installed in the runtime stage from the index).
-RUN pip install --upgrade pip setuptools wheel \
+RUN pip install --upgrade pip setuptools wheel "flit_core>=3.4,<4" \
     && pip wheel --use-pep517 --no-deps --no-build-isolation -w /build/wheels ./frappe
 
 # ---- stage 2: runtime image with the patched frappe + otel ----
