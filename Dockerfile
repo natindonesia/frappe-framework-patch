@@ -167,11 +167,13 @@ COPY --chown=frappe:frappe frappe/ /tmp/frappe/
 COPY --chown=frappe:frappe patches/ /tmp/patches/
 COPY --chown=frappe:frappe scripts/ /tmp/scripts/
 # bench init (frappe-bench) requires --frappe-path to be a Git repository, but
-# the build context excludes .git (see .dockerignore), and /tmp/frappe is a
-# plain copy of the submodule tree. Re-initialise a fresh repo here so bench
-# init succeeds. apply-patches.sh then runs in git-backed mode against this tree.
+# the submodule .git file points to the parent checkout's module metadata and is
+# unusable inside the image. Remove it, then re-initialise a fresh repo here so
+# bench init succeeds. apply-patches.sh then runs in git-backed mode.
 
-RUN git init /tmp/frappe \
+RUN rm -f /tmp/frappe/.git \
+    && git config --global --add safe.directory /tmp/frappe \
+    && git init /tmp/frappe \
     && git -C /tmp/frappe add -A \
     && git -C /tmp/frappe -c user.email=x -c user.name=x commit -qm base \
     && chmod +x /tmp/scripts/apply-patches.sh \
