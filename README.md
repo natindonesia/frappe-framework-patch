@@ -22,24 +22,20 @@ be run with `bash tests/run_tests.sh` when package installation is available.
 bash scripts/build.sh
 ```
 
-This creates an immutable tag based on the upstream and repository SHAs. It does not
-push anything. Use `--push` only after authenticating Docker to the registry; use
-`--no-latest` to omit the mutable convenience tag.
+This creates a local image and does not push anything. Registry publication is handled
+by the consolidated GitHub Actions workflow after its runtime and integration tests pass.
 
 ## GitHub Actions
 
-The Docker/CI workflows are the battle-tested originals from the parent Frappe
-repo, adapted to this patch repository's submodule/patch model (the Dockerfile
-applies `./patches` to `./frappe` before `bench init`; the build context vendors
-the required `resources/`, `docker-compose.yml`, `Dockerfile.granian`, and the
-custom OTEL overlay files in `runtime/`).
+The Docker/CI workflow is adapted to this patch repository's submodule/patch model
+(the Dockerfile applies `./patches` to `./frappe` before `bench init`; the build
+context vendors the required `resources/`, `docker-compose.yml`,
+`Dockerfile.granian`, and the custom OTEL overlay files in `runtime/`).
 
-- `build-docker.yml` — on push / pull_request. Builds the patched image, runs
-  the runtime + compose/OTEL integration tests, and on push pushes
+- `build-images.yml` — on push / pull_request. Builds and tests the vanilla and
+  Granian images in one job, then on an approved main push publishes exactly
   `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest` and
-  `.../frappe:<short-sha>` (no push on pull_request).
-- `build-granian.yml` — optional Granian runtime build + compose test. NEVER
-  pushes.
+  `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest-granian`.
 - `update-upstream.yml` is manual (`workflow_dispatch`). It advances `frappe/` to the
   latest `origin/version-16`, validates the patch set, and pushes only the parent
   repository's gitlink commit when validation succeeds.
@@ -50,15 +46,15 @@ Registry configuration (same as the parent workflow): set the variables
 (or the `DIGITALOCEAN_EMAIL`/`DIGITALOCEAN_ACCESS_TOKEN` fallbacks). Secrets are
 used only by the registry login action and are never printed.
 
-Images are published as:
+Images are published only as:
 
 ```text
 ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest
-${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:<github-sha-prefix>
+${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest-granian
 ```
 
-`latest` is only a convenience alias. Production deployments should pin the
-short-SHA tag or, preferably, the image digest.
+The Granian image is layered on the vanilla image built in the same CI build/test
+job. No SHA, commit, run, variant, or temporary registry tags are published.
 
 ## Patch scope
 

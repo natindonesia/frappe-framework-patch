@@ -1,4 +1,4 @@
-# CI-only overlay for the build-docker.yml granian-build job.
+# CI-only overlay for the consolidated build-images.yml Granian leg.
 # Usage: docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml \
 #            -f resources/compose.granian-ci.yml up -d
 #
@@ -8,8 +8,8 @@
 # !override tag (v5.3.1 on this runner).
 #
 # IMAGE TAGGING: every app/nginx service pins image: frappe-granian:latest
-# (built by the granian-build job, which `needs: test-build`). This swaps the
-# whole stack onto the Granian variant with one tag.
+# (built by build-images.yml, layered on frappe:latest in the same job). This
+# swaps the whole stack onto the Granian variant with one tag.
 #
 # THE ONE SWAP: only the `web` service command differs — granian replaces the
 # gunicorn invocation. Same entrypoint object (frappe.otel_wsgi:application),

@@ -2,10 +2,9 @@
 # =============================================================================
 # Granian alternative runtime — OPTIONAL, opt-in CI build. NOT the default.
 #
-# Extends the canonical `frappe` image (Dockerfile, built and --load'ed as
-# frappe:latest by the test-build job) and additionally installs the Granian
-# Rust WSGI/ASGI server into the bench venv, so the `web` service can serve
-# the app via Granian instead of gunicorn:
+# Extends the canonical `frappe` image (Dockerfile) and additionally installs
+# the Granian Rust WSGI/ASGI server into the bench venv, so the `web` service
+# can serve the app via Granian instead of gunicorn:
 #
 #   env/bin/granian --interface wsgi --host 0.0.0.0 --port 8000 \
 #     --workers 2 --blocking-threads 4 frappe.otel_wsgi:application
@@ -15,13 +14,17 @@
 # OTEL_EXPORTER_OTLP_ENDPOINT env is set. So the runtime swap is confined to
 # the server process; nothing in frappe/ differs.
 #
-# BASE IMAGE: `frappe:latest` must already exist locally (this is a CI-only
-# image). It is the freshly-built canonical image --load'ed by the
-# test-build job on the same self-hosted runner. `needs: test-build` in the
-# granian-build job guarantees ordering. This image is only used by CI and is
-# NEVER pushed to a registry.
+# BASE IMAGE is parameterised via ARG BASE_IMAGE:
+#   - default `frappe:latest` (local dev build that has produced frappe:latest).
+#   - CI passes `--build-arg BASE_IMAGE=frappe:latest` in the same-job build so
+#     Granian layers directly on the exact vanilla image result of the same run
+#     (no registry pull, no second source build).
+# The tested local `frappe-granian:latest` result is what CI tags and pushes;
+# no registry pull and no second source build is involved.
+# This image is only ever published as `<registry>/frappe:latest-granian`.
 # =============================================================================
-FROM frappe:latest AS granian
+ARG BASE_IMAGE=frappe:latest
+FROM ${BASE_IMAGE} AS granian
 
 USER frappe
 
