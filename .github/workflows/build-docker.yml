@@ -65,48 +65,70 @@ jobs:
             -t frappe:latest \
             .
 
-      - name: Test Nginx runtime & static asset serving
+      - name: Test Nginx runtime & assets.json/static asset serving
         run: |
-          docker run --rm frappe:latest bash -c "
-            /usr/local/bin/nginx-entrypoint.sh & pid=\$! &&
-            sleep 2 &&
-            ASSET_PATH=\$(jq -r '.\"desk.bundle.js\"' sites/assets/assets.json) &&
-            echo \"Found manifest reference desk.bundle.js -> \${ASSET_PATH}\" &&
-            STATUS_DESK=\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080\${ASSET_PATH}) &&
-            STATUS_ACE=\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/assets/frappe/node_modules/ace-builds/src-min-noconflict/ace.js) &&
-            kill \$pid &&
-            if [ \"\$STATUS_DESK\" = \"200\" ] && [ \"\$STATUS_ACE\" = \"200\" ]; then
-              echo \"✅ Nginx served asset manifest reference \${ASSET_PATH} and ace.js successfully (HTTP 200)\"
-            else
-              echo \"❌ Nginx static asset test failed (Desk: \$STATUS_DESK, Ace: \$STATUS_ACE)\" && exit 1
-            fi
-          "
+          docker run --rm frappe:latest bash -c '
+            /usr/local/bin/nginx-entrypoint.sh & pid=$!
+            trap "kill $pid 2>/dev/null || true" EXIT
+            for i in $(seq 1 20); do
+              curl -sf http://127.0.0.1:8080/assets/assets.json >/dev/null && break
+              sleep 1
+            done
+            test -s sites/assets/assets.json
+            HTTP_CODE=$(curl -s -o /tmp/served-assets.json -w "%{http_code}" http://127.0.0.1:8080/assets/assets.json)
+            test "$HTTP_CODE" = 200
+            SERVER_HDR=$(curl -sI http://127.0.0.1:8080/assets/assets.json | tr -d "\r" | awk -F": " "tolower(\$1)==\"server\" {print \$2; exit}")
+            case "$SERVER_HDR" in nginx*) ;; *) echo "Unexpected Server header: $SERVER_HDR"; exit 1 ;; esac
+            cmp -s sites/assets/assets.json /tmp/served-assets.json
+            ASSET_PATH=$(jq -er ".\"desk.bundle.js\"" /tmp/served-assets.json)
+            ASSET_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080$ASSET_PATH")
+            test "$ASSET_CODE" = 200
+            ACE_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/assets/frappe/node_modules/ace-builds/src-min-noconflict/ace.js)
+            test "$ACE_CODE" = 200
+            echo "Nginx served assets.json and manifest assets (assets.json=$HTTP_CODE, desk=$ASSET_CODE, ace=$ACE_CODE)"
+          '
 
       - name: Test Socket.io runtime
         run: |
-          docker run --rm frappe:latest bash -c "
-            export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:\$PATH &&
-            OUTPUT=\$(node /home/frappe/frappe-bench/apps/frappe/socketio.js 2>&1 | grep 'Realtime service listening') &&
-            if [ -n \"\$OUTPUT\" ]; then
-              echo '✅ Socket.io runtime test passed: '\$OUTPUT
-            else
-              echo '❌ Socket.io runtime test failed' && exit 1
-            fi
-          "
+          docker run --rm frappe:latest bash -c '
+            export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:$PATH
+            cd /home/frappe/frappe-bench
+            LOG=/tmp/socketio.log
+            node apps/frappe/socketio.js >"$LOG" 2>&1 & NODE_PID=$!
+            trap "kill $NODE_PID 2>/dev/null || true" EXIT
+            for i in $(seq 1 30); do
+              grep -q "Realtime service listening" "$LOG" && break
+              sleep 1
+            done
+            grep -q "Realtime service listening" "$LOG" || { cat "$LOG"; exit 1; }
+            echo "Socket.io service reached listening state"
+          '
 
       - name: Test Gunicorn & Python runtime
         run: |
-          docker run --rm frappe:latest bash -c "
-            ./env/bin/gunicorn --version &&
-            ./env/bin/python -c 'import frappe; print(f\"Frappe version: {frappe.__version__}\")'
-          "
+          docker run --rm frappe:latest bash -c '
+            ./env/bin/gunicorn --version
+            ./env/bin/python -c "import frappe; print(\"Frappe version: %s\" % frappe.__version__)"
+            ./env/bin/python -c "from frappe.otel_wsgi import application; print(\"WSGI application import OK\")"
+            ./env/bin/gunicorn --chdir=/home/frappe/frappe-bench/sites --bind=127.0.0.1:8001 --workers=1 --worker-class=sync --timeout=30 --config=/home/frappe/frappe-bench/apps/frappe/resources/gunicorn-otel-conf.py frappe.otel_wsgi:application >/tmp/gunicorn.log 2>&1 & GUNICORN_PID=$!
+            trap "kill $GUNICORN_PID 2>/dev/null || true" EXIT
+            ok=0
+            for i in $(seq 1 40); do
+              CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8001/api/method/ping || true)
+              if [ -n "$CODE" ] && [ "$CODE" != 000 ]; then ok=1; break; fi
+              sleep 1
+            done
+            if [ "$ok" != 1 ]; then cat /tmp/gunicorn.log; exit 1; fi
+            echo "Gunicorn answered /api/method/ping with HTTP $CODE"
+          '
 
       - name: Test Queue / Worker runtime
         run: |
-          docker run --rm frappe:latest bash -c "
-            cd sites &&
-            ../env/bin/python -m frappe.utils.bench_helper frappe worker --help
-          "
+          docker run --rm frappe:latest bash -c '
+            cd sites
+            ../env/bin/python -m frappe.utils.bench_helper frappe worker --help >/dev/null
+            ../env/bin/python -c "import frappe.utils.background_jobs; import frappe.utils.bench_helper; print(\"patched worker modules import OK\")"
+          '
 
       - name: Image size report
         run: |
