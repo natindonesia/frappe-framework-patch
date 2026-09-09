@@ -11,8 +11,10 @@
 # a registry tag or a second source build), BOTH variants are built and tested
 # in a single `build-and-test` job where the same local daemon holds
 # `frappe:latest`, and `Dockerfile.granian` `FROM`s it via
-# `--build-arg BASE_IMAGE=frappe:latest`. No SHA-, commit-, run-, or temporary
-# image tag is ever created or pushed.
+# `--build-arg BASE_IMAGE=frappe:latest`. The long inline test blocks live in
+# `scripts/ci/*.sh` so each step is a one-line `run:` that calls a script with a
+# clear name. No SHA-, commit-, run-, or temporary image tag is ever created or
+# pushed.
 #
 # TAGGING CONTRACT (the ONLY tags ever pushed to DigitalOcean Container Registry):
 #   - vanilla : ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest
@@ -58,7 +60,7 @@ jobs:
   # build-and-test — builds vanilla + Granian in ONE daemon, then runs every
   # existing smoke test for both variants (nginx/assets, Socket.IO, gunicorn,
   # queue/worker, Compose/OTEL, Granian identity/API/OTEL/CRUD/teardown).
-  # Never pushes anything.
+  # Never pushes anything. Test logic is factored out to scripts/ci/.
   # -------------------------------------------------------------------------
   build-and-test:
     name: Build & Test Vanilla + Granian
@@ -76,348 +78,169 @@ jobs:
 
       # ---------- vanilla build ----------
       - name: Build vanilla Docker image (frappe:latest)
-        run: |
-          docker buildx build \
-            --load \
-            --cache-from type=gha,scope=frappe-vanilla \
-            --cache-to type=gha,mode=max,scope=frappe-vanilla \
-            -t frappe:latest \
-            .
+        run: bash scripts/ci/vanilla-build.sh
 
       - name: Test Nginx runtime & assets.json/static asset serving
-        run: |
-          docker run --rm frappe:latest bash -c '
-            /usr/local/bin/nginx-entrypoint.sh & pid=$!
-            trap "kill $pid 2>/dev/null || true" EXIT
-            for i in $(seq 1 20); do
-              curl -sf http://127.0.0.1:8080/assets/assets.json >/dev/null && break
-              sleep 1
-            done
-            test -s sites/assets/assets.json
-            HTTP_CODE=$(curl -s -o /tmp/served-assets.json -w "%{http_code}" http://127.0.0.1:8080/assets/assets.json)
-            test "$HTTP_CODE" = 200
-            SERVER_HDR=$(curl -sI http://127.0.0.1:8080/assets/assets.json | tr -d "\r" | awk -F": " "tolower(\$1)==\"server\" {print \$2; exit}")
-            case "$SERVER_HDR" in nginx*) ;; *) echo "Unexpected Server header: $SERVER_HDR"; exit 1 ;; esac
-            cmp -s sites/assets/assets.json /tmp/served-assets.json
-            ASSET_PATH=$(jq -er ".\"desk.bundle.js\"" /tmp/served-assets.json)
-            ASSET_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080$ASSET_PATH")
-            test "$ASSET_CODE" = 200
-            ACE_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/assets/frappe/node_modules/ace-builds/src-min-noconflict/ace.js)
-            test "$ACE_CODE" = 200
-            echo "Nginx served assets.json and manifest assets (assets.json=$HTTP_CODE, desk=$ASSET_CODE, ace=$ACE_CODE)"
-          '
+        run: bash scripts/ci/vanilla-test-nginx.sh
 
       - name: Test Socket.io runtime
-        run: |
-          docker run --rm frappe:latest bash -c '
-            export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:$PATH
-            cd /home/frappe/frappe-bench
-            LOG=/tmp/socketio.log
-            node apps/frappe/socketio.js >"$LOG" 2>&1 & NODE_PID=$!
-            trap "kill $NODE_PID 2>/dev/null || true" EXIT
-            for i in $(seq 1 30); do
-              grep -q "Realtime service listening" "$LOG" && break
-              sleep 1
-            done
-            grep -q "Realtime service listening" "$LOG" || { cat "$LOG"; exit 1; }
-            echo "Socket.io service reached listening state"
-          '
+        run: bash scripts/ci/vanilla-test-socketio.sh
 
       - name: Test Gunicorn & Python runtime
-        run: |
-          docker run --rm frappe:latest bash -c '
-            ./env/bin/gunicorn --version
-            ./env/bin/python -c "import frappe; print(\"Frappe version: %s\" % frappe.__version__)"
-            ./env/bin/python -c "from frappe.otel_wsgi import application; print(\"WSGI application import OK\")"
-            ./env/bin/gunicorn --chdir=/home/frappe/frappe-bench/sites --bind=127.0.0.1:8001 --workers=1 --worker-class=sync --timeout=30 --config=/home/frappe/frappe-bench/apps/frappe/resources/gunicorn-otel-conf.py frappe.otel_wsgi:application >/tmp/gunicorn.log 2>&1 & GUNICORN_PID=$!
-            trap "kill $GUNICORN_PID 2>/dev/null || true" EXIT
-            ok=0
-            for i in $(seq 1 40); do
-              CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8001/api/method/ping || true)
-              if [ -n "$CODE" ] && [ "$CODE" != 000 ]; then ok=1; break; fi
-              sleep 1
-            done
-            if [ "$ok" != 1 ]; then cat /tmp/gunicorn.log; exit 1; fi
-            echo "Gunicorn answered /api/method/ping with HTTP $CODE"
-          '
+        run: bash scripts/ci/vanilla-test-gunicorn.sh
 
       - name: Test Queue / Worker runtime
-        run: |
-          docker run --rm frappe:latest bash -c '
-            cd sites
-            ../env/bin/python -m frappe.utils.bench_helper frappe worker --help >/dev/null
-            ../env/bin/python -c "import frappe.utils.background_jobs; import frappe.utils.bench_helper; print(\"patched worker modules import OK\")"
-          '
+        run: bash scripts/ci/vanilla-test-worker.sh
 
       # ---------- Granian build (layered on the local frappe:latest) ----------
-      - name: Build Granian variant image (frappe-granian:latest, layered on vanilla)
-        run: |
-          # Plain `docker build` (default builder = local daemon) so `FROM
-          # ${BASE_IMAGE}` in Dockerfile.granian resolves to the `frappe:latest`
-          # image --load'ed just above INTO THIS SAME daemon. `docker buildx`
-          # would use an isolated container builder that instead tries to pull
-          # the base from docker.io. This makes the Granian image a thin layer
-          # genuinely derived from the exact vanilla result of this run.
-          docker build \
-            --build-arg BASE_IMAGE=frappe:latest \
-            -t frappe-granian:latest \
-            -f Dockerfile.granian \
-            .
+      - name: Build Granian variant image (layered on vanilla, same daemon)
+        run: bash scripts/ci/granian-build.sh
 
-      - name: Verify Granian installed in image
-        run: |
-          docker run --rm frappe-granian:latest bash -c "
-            mkdir -p /home/frappe/logs &&
-            ./env/bin/granian --version &&
-            ./env/bin/python -c 'import frappe; from frappe.otel_wsgi import application; print(f\"Frappe {frappe.__version__} granian entrypoint loads\")'
-          "
-
-      - name: Image size report
-        run: |
-          docker images frappe:latest frappe-granian:latest --format "Image: {{.Repository}}:{{.Tag}}  Size: {{.Size}}"
+      - name: Verify Granian installed + image size report
+        run: bash scripts/ci/granian-verify.sh
 
       # ===== Vanilla Compose / OTEL integration (project: ci-otel) =====
       - name: Cleanup lingering vanilla containers
-        run: docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml down -v --remove-orphans || true
+        env:
+          CI_PROJECT: ci-otel
+        run: bash scripts/ci/compose-cleanup.sh -v
 
       - name: Start DB, Redis & OTEL Collector (vanilla)
-        run: |
-          HTTP_PORT=18085 docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml up -d mariadb redis otel-collector
+        env:
+          CI_PROJECT: ci-otel
+          HTTP_PORT: '18085'
+        run: bash scripts/ci/compose-start-deps.sh
 
       - name: Run init container explicitly (vanilla, live logs)
-        run: |
-          OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 HTTP_PORT=18085 \
-            docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml run --rm init
+        env:
+          CI_PROJECT: ci-otel
+          HTTP_PORT: '18085'
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+        run: bash scripts/ci/compose-init.sh
 
       - name: Start remaining stack (vanilla, OTEL on)
-        run: |
-          OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 NGINX_OTEL_ENDPOINT=otel-collector:4317 HTTP_PORT=18085 \
-            docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml up -d web socketio worker schedule worker-long worker-short nginx
+        env:
+          CI_PROJECT: ci-otel
+          HTTP_PORT: '18085'
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+          NGINX_OTEL_ENDPOINT: otel-collector:4317
+        run: bash scripts/ci/compose-start-stack.sh
 
       - name: Wait for vanilla web readiness
-        run: |
-          ok=""
-          for i in $(seq 1 30); do
-            code=$(docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml exec -T nginx curl -s -o /dev/null -w "%{http_code}" -H "Host: crm.localhost" http://127.0.0.1:8080/api/method/ping || true)
-            [ "$code" = "200" ] && ok=1 && break
-            sleep 2
-          done
-          [ -n "$ok" ] || { docker compose -p ci-otel logs web nginx; exit 1; }
-          echo "vanilla web ready (HTTP 200)"
+        env:
+          CI_PROJECT: ci-otel
+        run: bash scripts/ci/compose-wait-web.sh
 
       - name: Assert OTEL spans (vanilla, both legs + shared trace)
-        run: |
-          docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml exec -T nginx curl -s -H "Host: crm.localhost" http://127.0.0.1:8080/api/method/ping
-          for i in $(seq 1 20); do
-            trace_map=$(docker compose -p ci-otel logs otel-collector | awk '
-              /service\.name: Str\(/ {
-                s=$0; sub(/.*service\.name: Str\(/,"",s); sub(/\).*/,"",s); svc=s
-              }
-              /Trace ID[[:space:]]*:/ { gsub(/.*: /,""); print $1, svc }
-            ' | sort -u)
-            trace=$(echo "$trace_map" | awk '
-              { t=$1; s=$2; svc[t","s]=1; have[t]=1 }
-              END { for (t in have) if (svc[t",frappe-nginx"] && svc[t",frappe-app"]) { print t; exit } }
-            ')
-            [ -n "$trace" ] && break
-            sleep 2
-          done
-          if [ -n "$trace" ]; then
-            echo "trace continuity OK: $trace (frappe-nginx + frappe-app)"
-            exit 0
-          fi
-          echo "::error::no trace carried BOTH frappe-nginx + frappe-app after up to 40s polling"
-          echo "--- collected (trace, service) pairs ---"
-          [ -n "$trace_map" ] && echo "$trace_map" || echo "(collector log produced no (trace, service) pairs)"
-          [ -z "$trace_map" ] || {
-            [ -n "$(echo "$trace_map" | grep ' frappe-nginx$')" ] || echo "MISSING: zero frappe-nginx (nginx) traces"
-            [ -n "$(echo "$trace_map" | grep ' frappe-app$')" ]   || echo "MISSING: zero frappe-app (web) traces"
-          }
-          echo "--- otel-collector log tail ---"
-          docker compose -p ci-otel logs --tail 60 otel-collector || true
-          exit 1
+        env:
+          CI_PROJECT: ci-otel
+        run: bash scripts/ci/compose-otel-spans.sh
 
       - name: Assert gate-off (no spans when endpoint empty)
-        run: |
-          before=$(docker compose -p ci-otel logs --since 1m otel-collector | grep -c 'Span #' || true)
-          OTEL_EXPORTER_OTLP_ENDPOINT= NGINX_OTEL_ENDPOINT= HTTP_PORT=18085 \
-            docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml up -d
-          sleep 10
-          docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml exec -T nginx curl -s -o /dev/null -H "Host: crm.localhost" http://127.0.0.1:8080/api/method/ping
-          docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml exec -T nginx curl -s -o /dev/null -H "Host: crm.localhost" http://127.0.0.1:8080/api/method/ping
-          after=$(docker compose -p ci-otel logs --since 1m otel-collector | grep -c 'Span #' || true)
-          docker compose -p ci-otel logs nginx | grep -q 'OpenTelemetry disabled' || { echo "gate-off log missing"; exit 1; }
-          [ "$after" -le "$before" ] || { echo "spans leaked with gate off: $before -> $after"; exit 1; }
-          echo "gate-off OK (spans: $before -> $after)"
+        env:
+          CI_PROJECT: ci-otel
+          HTTP_PORT: '18085'
+          OTEL_EXPORTER_OTLP_ENDPOINT: ''
+          NGINX_OTEL_ENDPOINT: ''
+        run: bash scripts/ci/compose-gate-off.sh
 
       - name: Diagnostic dump on failure (vanilla)
         if: failure()
-        run: |
-          docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml ps -a || true
-          echo "--- vanilla otel-collector logs ---"
-          docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml logs otel-collector || true
-          echo "--- vanilla web/nginx logs ---"
-          docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml logs web nginx || true
+        env:
+          CI_PROJECT: ci-otel
+        run: bash scripts/ci/compose-diag.sh
 
       - name: Teardown vanilla
         if: always()
-        run: |
-          docker compose -p ci-otel -f docker-compose.yml -f resources/compose.ci.yml down --remove-orphans
-          # NEVER -v: ci-otel_* volumes persist for the idempotent init path.
+        env:
+          CI_PROJECT: ci-otel
+        run: bash scripts/ci/compose-teardown.sh
 
       # ===== Granian Compose / OTEL / CRUD integration (project: ci-granian) =====
       - name: Cleanup lingering Granian containers
-        run: docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml down --remove-orphans || true
+        env:
+          CI_PROJECT: ci-granian
+          EXTRA_FILES: resources/compose.granian-ci.yml
+        run: bash scripts/ci/compose-cleanup.sh
 
       - name: Start DB, Redis & OTEL Collector (Granian)
-        run: |
-          HTTP_PORT=18086 docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml up -d mariadb redis otel-collector
+        env:
+          CI_PROJECT: ci-granian
+          EXTRA_FILES: resources/compose.granian-ci.yml
+          HTTP_PORT: '18086'
+        run: bash scripts/ci/compose-start-deps.sh
 
       - name: Run init container explicitly (Granian, live logs)
-        run: |
-          OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 HTTP_PORT=18086 \
-            docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml run --rm init
+        env:
+          CI_PROJECT: ci-granian
+          EXTRA_FILES: resources/compose.granian-ci.yml
+          HTTP_PORT: '18086'
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+        run: bash scripts/ci/compose-init.sh
 
       - name: Start remaining stack (Granian web + OTEL on)
-        run: |
-          OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 NGINX_OTEL_ENDPOINT=otel-collector:4317 HTTP_PORT=18086 \
-            docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml up -d web socketio worker schedule worker-long worker-short nginx
+        env:
+          CI_PROJECT: ci-granian
+          EXTRA_FILES: resources/compose.granian-ci.yml
+          HTTP_PORT: '18086'
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+          NGINX_OTEL_ENDPOINT: otel-collector:4317
+        run: bash scripts/ci/compose-start-stack.sh
 
       - name: Wait for Granian web readiness
-        run: |
-          ok=""
-          for i in $(seq 1 120); do
-            code=$(docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml exec -T nginx curl -s -o /dev/null -w "%{http_code}" -H "Host: crm.localhost" http://127.0.0.1:8080/api/method/ping || true)
-            [ "$code" = "200" ] && ok=1 && break
-            sleep 2
-          done
-          [ -n "$ok" ] || { docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml logs web nginx; exit 1; }
-          echo "Granian web ready (HTTP 200)"
+        env:
+          CI_PROJECT: ci-granian
+          EXTRA_FILES: resources/compose.granian-ci.yml
+          CI_WAIT_ROUNDS: '120'
+        run: bash scripts/ci/compose-wait-web.sh
 
       - name: Assert Granian is the serving process
-        run: |
-          web_id=$(docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml ps -q web)
-          cmd=$(docker exec "$web_id" sh -c 'tr "\000" " " < /proc/1/cmdline')
-          echo "web PID1 cmdline: $cmd"
-          if echo "$cmd" | grep -qE 'granian.*otel_wsgi' && ! echo "$cmd" | grep -q 'gunicorn'; then
-            echo "web service is serving via granian"
-          else
-            echo "::error::web service is not running granian (see PID1 cmdline above)"
-            exit 1
-          fi
+        env:
+          CI_PROJECT: ci-granian
+          EXTRA_FILES: resources/compose.granian-ci.yml
+        run: bash scripts/ci/granian-verify-serving.sh
 
       - name: Assert API through granian returns pong
-        run: |
-          body=$(docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml exec -T nginx curl -s -H "Host: crm.localhost" http://127.0.0.1:8080/api/method/ping)
-          echo "ping response: $body"
-          echo "$body" | grep -q '"message":"pong"' || { echo "::error::expected pong, got: $body"; exit 1; }
+        env:
+          CI_PROJECT: ci-granian
+          EXTRA_FILES: resources/compose.granian-ci.yml
+        run: bash scripts/ci/granian-pong.sh
 
       - name: Assert OTEL spans through granian (both legs + shared trace)
-        run: |
-          docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml exec -T nginx curl -s -H "Host: crm.localhost" http://127.0.0.1:8080/api/method/ping
-          for i in $(seq 1 20); do
-            trace_map=$(docker compose -p ci-granian logs otel-collector | awk '
-              /service\.name: Str\(/ {
-                s=$0; sub(/.*service\.name: Str\(/,"",s); sub(/\).*$/,"",s); svc=s
-              }
-              /Trace ID[[:space:]]*:/ { gsub(/.*: /,""); print $1, svc }
-            ' | sort -u)
-            trace=$(echo "$trace_map" | awk '
-              { t=$1; s=$2; svc[t","s]=s; have[t]=1 }
-              END { for (t in have) if (svc[t",frappe-nginx"] && svc[t",frappe-app"]) { print t; exit } }
-            ')
-            [ -n "$trace" ] && break
-            sleep 2
-          done
-          if [ -n "$trace" ]; then
-            echo "trace continuity OK: $trace (frappe-nginx + frappe-app through granian)"
-            exit 0
-          fi
-          echo "::error::no trace carried BOTH frappe-nginx + frappe-app through granian after up to 40s polling"
-          echo "trace_sum:"
-          echo "$trace_map"
-          echo "--- otel-collector log tail ---"
-          docker compose -p ci-granian logs --tail 60 otel-collector || true
-          exit 1
+        env:
+          CI_PROJECT: ci-granian
+          EXTRA_FILES: resources/compose.granian-ci.yml
+        run: bash scripts/ci/compose-otel-spans.sh
 
       - name: Assert CRUD through granian (perf.sh ToDo shape)
-        run: |
-          set -euo pipefail
-          CMD="docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml exec -T nginx curl -sS --max-time 60"
-          HDR="Host: crm.localhost"
-          CK=/tmp/crud_cookie.$$
-          LF=/tmp/crud_log.$$
-          trap 'rm -f "$CK" "$LF"' EXIT
-          pass=0; fail=0
-          ok()  { pass=$((pass+1)); echo "  PASS: $*"; }
-          bad() { fail=$((fail+1)); echo "  FAIL: $*"; }
-          status() {
-            echo "------"
-            echo "\$ $*"
-            "$@" -w $'\nHTTP_STATUS:%{http_code}' 2>&1 | tee "$LF" || true
-            HTTP_STATUS="$(grep -oE 'HTTP_STATUS:[0-9]+$' "$LF" | tail -1 | cut -d: -f2)"
-            HTTP_BODY="$(sed '$d' "$LF")"
-          }
-          echo "== CRUD smoke (granian + nginx + ToDo) =="
-          status $CMD -X POST http://127.0.0.1:8080/api/method/login -H "$HDR" -H "Content-Type: application/x-www-form-urlencoded" -c "$CK" -d "usr=Administrator&pwd=${ADMIN_PASSWORD:-admin}"
-          if [ "$HTTP_STATUS" = 200 ] && echo "$HTTP_BODY" | grep -q '"Logged In"'; then ok "login Administrator"; else bad "login HTTP $HTTP_STATUS: $HTTP_BODY"; exit 1; fi
-          DESC="crud-$(date +%s)"
-          status $CMD -b "$CK" -H "$HDR" -H "Content-Type: application/json" -d "{\"data\":{\"doctype\":\"ToDo\",\"description\":\"$DESC\",\"status\":\"Open\"}}" http://127.0.0.1:8080/api/resource/ToDo
-          NAME="$(printf '%s' "$HTTP_BODY" | grep -oE '"name":"[^"]+"' | head -1 | sed -E 's/.*"name":"([^"]+)".*/\1/')"
-          case "$HTTP_STATUS" in
-            200|201) [ -n "$NAME" ] && ok "create ToDo -> $NAME" || { bad "create no name: $HTTP_BODY"; exit 1; } ;;
-            *) bad "create HTTP $HTTP_STATUS: $HTTP_BODY"; exit 1; ;;
-          esac
-          status $CMD -b "$CK" -H "$HDR" "http://127.0.0.1:8080/api/resource/ToDo/$NAME"
-          case "$HTTP_STATUS" in
-            200) printf '%s' "$HTTP_BODY" | grep -q "$DESC" && ok "read item matches" || { bad "read body missing desc: $HTTP_BODY"; exit 1; } ;;
-            *) bad "read HTTP $HTTP_STATUS: $HTTP_BODY"; exit 1; ;;
-          esac
-          status $CMD -b "$CK" -H "$HDR" "http://127.0.0.1:8080/api/resource/ToDo?limit_page_length=20"
-          case "$HTTP_STATUS" in
-            200) printf '%s' "$HTTP_BODY" | grep -q "$NAME" && ok "list contains item" || { bad "list missing item: $HTTP_BODY"; exit 1; } ;;
-            *) bad "list HTTP $HTTP_STATUS: $HTTP_BODY"; exit 1; ;;
-          esac
-          status $CMD -X PUT -b "$CK" -H "$HDR" -H "Content-Type: application/json" -d "{\"data\":{\"status\":\"Closed\"}}" "http://127.0.0.1:8080/api/resource/ToDo/$NAME"
-          [ "$HTTP_STATUS" = 200 ] && ok "update item (status -> Closed)" || { bad "update HTTP $HTTP_STATUS: $HTTP_BODY"; exit 1; }
-          status $CMD -X DELETE -b "$CK" -H "$HDR" "http://127.0.0.1:8080/api/resource/ToDo/$NAME"
-          case "$HTTP_STATUS" in
-            200|202) ok "delete item (cleanup)" ;;
-            *) bad "delete HTTP $HTTP_STATUS: $HTTP_BODY"; exit 1; ;;
-          esac
-          echo
-          echo "CRUD result: $pass passed, $fail failed"
-          [ "$fail" -eq 0 ] || { echo "CRUD FAILED"; exit 1; }
+        env:
+          CI_PROJECT: ci-granian
+          EXTRA_FILES: resources/compose.granian-ci.yml
+        run: bash scripts/ci/granian-crud.sh
 
       - name: Diagnostic dump on failure (Granian)
         if: failure()
-        run: |
-          docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml ps -a || true
-          echo "--- Granian otel-collector logs ---"
-          docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml logs otel-collector || true
-          echo "--- Granian web logs ---"
-          docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml logs web || true
-          echo "--- Granian nginx logs ---"
-          docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml logs nginx || true
+        env:
+          CI_PROJECT: ci-granian
+          EXTRA_FILES: resources/compose.granian-ci.yml
+        run: bash scripts/ci/compose-diag.sh
 
       - name: Teardown Granian
         if: always()
-        run: |
-          docker compose -p ci-granian -f docker-compose.yml -f resources/compose.ci.yml -f resources/compose.granian-ci.yml down --remove-orphans
-          # NEVER -v: ci-granian volumes persist so later runs exercise the idempotent init path.
+        env:
+          CI_PROJECT: ci-granian
+          EXTRA_FILES: resources/compose.granian-ci.yml
+        run: bash scripts/ci/compose-teardown.sh
 
-      # -----------------------------------------------------------------------
-      # Publish the EXACT images this job just built and smoke/compose/OTEL/CRUD
-      # tested (`frappe:latest` and the `frappe-granian:latest` layered on it in
-      # this same daemon). `docker tag` + `docker push` promote the tested local
-      # images directly — NO second rebuild, NO gha-cache re-assembly on another
-      # runner. Only the two production tags are ever pushed:
-      #   - vanilla : ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest
-      #   - Granian : ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest-granian
-      # No SHA-, commit-, run-, variant- or otherwise generated tag is ever
-      # pushed. Runs ONLY on a main push or a manual `workflow_dispatch` with
-      # `push_to_registry: true`. NEVER on pull_request.
-      # -----------------------------------------------------------------------
+      # -------------------------------------------------------------------
+      # Publish the EXACT images this job just built and smoke/compose/OTEL/
+      # CRUD tested (`frappe:latest` and the Granian layered on it in this same
+      # daemon). `docker tag` + `docker push` promote the tested local images
+      # directly — NO second rebuild, NO gha-cache re-assembly on another
+      # runner. Only the two production tags are ever pushed. Runs ONLY on a
+      # main push or a manual workflow_dispatch with push_to_registry: true.
+      # NEVER on pull_request.
+      # -------------------------------------------------------------------
       - name: Login to Container Registry
         if: ${{ github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true) }}
         uses: docker/login-action@v3
@@ -428,29 +251,12 @@ jobs:
 
       - name: Publish vanilla image (the tested frappe:latest)
         if: ${{ github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true) }}
-        run: |
-          REGISTRY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}"
-          echo "Pushing tested vanilla -> ${REGISTRY}/frappe:latest"
-          docker tag frappe:latest "${REGISTRY}/frappe:latest"
-          docker push "${REGISTRY}/frappe:latest"
+        run: bash scripts/ci/publish-vanilla.sh
 
-      - name: Publish Granian image (the tested frappe-granian:latest)
+      - name: Publish Granian image (the tested :latest-granian)
         if: ${{ github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true) }}
-        run: |
-          REGISTRY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}"
-          echo "Pushing tested granian -> ${REGISTRY}/frappe:latest-granian"
-          docker tag frappe-granian:latest "${REGISTRY}/frappe:latest-granian"
-          docker push "${REGISTRY}/frappe:latest-granian"
+        run: bash scripts/ci/publish-granian.sh
 
       - name: Verify published tags resolve to distinct digests
         if: ${{ github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true) }}
-        run: |
-          REGISTRY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}"
-          V_DIGEST="$(docker buildx imagetools inspect --format '{{index .Manifest.digest}}' "${REGISTRY}/frappe:latest")"
-          G_DIGEST="$(docker buildx imagetools inspect --format '{{index .Manifest.digest}}' "${REGISTRY}/frappe:latest-granian")"
-          echo "vanilla :latest         -> $V_DIGEST"
-          echo "granian :latest-granian -> $G_DIGEST"
-          [ -n "$V_DIGEST" ] || { echo "vanilla digest empty"; exit 1; }
-          [ -n "$G_DIGEST" ] || { echo "granian digest empty"; exit 1; }
-          [ "$V_DIGEST" != "$G_DIGEST" ] || { echo "vanilla and granian resolved to the SAME digest — check BASE_IMAGE wiring"; exit 1; }
-          echo "OK: vanilla and granian are distinct published images"
+        run: bash scripts/ci/publish-verify.sh
