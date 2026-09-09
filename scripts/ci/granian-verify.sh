@@ -10,5 +10,8 @@ docker run --rm frappe-granian:latest bash -c "
   ./env/bin/python -c 'import frappe; from frappe.otel_wsgi import application; print(f\"Frappe {frappe.__version__} granian entrypoint loads\")'
 "
 
-# Image size report.
-docker images frappe:latest frappe-granian:latest --format "Image: {{.Repository}}:{{.Tag}}  Size: {{.Size}}"
+# Image size report. (`docker images` accepts at most one repo arg, so use
+# `docker inspect` which handles multiple images.)
+docker inspect \
+  --format 'Image: {{.RepoTags}}  Size: {{.Size}}' \
+  frappe:latest frappe-granian:latest
