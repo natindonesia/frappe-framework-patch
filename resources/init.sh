@@ -44,3 +44,11 @@ else
   fi
   bench --site all migrate
 fi
+
+
+# Restore baked assets.json onto the shared sites volume (overrides stale copy)
+if [ -f "/opt/defaults/assets.json" ]; then
+  mkdir -p sites/assets
+  cp /opt/defaults/assets.json sites/assets/assets.json
+fi
+

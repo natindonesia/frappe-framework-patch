@@ -220,6 +220,8 @@ FROM base AS frappe
 USER frappe
 
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
+COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench/sites/assets/assets.json /opt/defaults/assets.json
+
 
 WORKDIR /home/frappe/frappe-bench
 
