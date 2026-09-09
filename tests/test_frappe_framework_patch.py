@@ -132,11 +132,22 @@ class OTelPropagationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._tc = _load_trace_module()
-
-    def setUp(self):
-        # ensure a clean no-op tracer provider before each test
+        # Install a recording tracer provider ONCE. The SDK rejects (with a warning)
+        # any later set_tracer_provider call once a non-noop provider is installed, so
+        # this must be the FIRST (and only) place we set it. All tests share it.
         from opentelemetry import trace as otel_trace
-        otel_trace.set_tracer_provider(None)
+
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        try:
+            from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter  # modern SDK (>=1.4x)
+        except ImportError:  # older SDK still ships it in the package __init__
+            from opentelemetry.sdk.trace.export import InMemorySpanExporter
+
+        cls.exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(cls.exporter))
+        otel_trace.set_tracer_provider(provider)
 
     def test_is_available_true(self):
         self.assertTrue(self._tc.is_available())
@@ -146,20 +157,10 @@ class OTelPropagationTests(unittest.TestCase):
 
     def test_w3c_trace_context_roundtrip(self):
         from opentelemetry import trace as otel_trace
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import (
-            InMemorySpanExporter,
-            SimpleSpanProcessor,
-        )
 
-        exporter = InMemorySpanExporter()
-        provider = TracerProvider()
-        provider.add_span_processor(SimpleSpanProcessor(exporter))
-        otel_trace.set_tracer_provider(provider)
-
-        tracer = provider.get_tracer("frappe-framework-patch.test")
+        tracer = otel_trace.get_tracer("frappe-framework-patch.test")
         span = tracer.start_span("background-job")
-        with otel_trace.use_span(span, end=False):
+        with otel_trace.use_span(span, end_on_exit=False):
             carrier = self._tc.get_trace_context()
         self.assertIn("traceparent", carrier, "recording span should inject traceparent")
 
@@ -168,7 +169,6 @@ class OTelPropagationTests(unittest.TestCase):
         self._tc.detach_trace_context(token)
 
         span.end()
-        otel_trace.set_tracer_provider(None)
 
 
 if __name__ == "__main__":
