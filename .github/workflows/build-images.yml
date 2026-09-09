@@ -76,49 +76,49 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # ---------- vanilla build ----------
-      - name: Build vanilla Docker image (frappe:latest)
+      # ---------- STAGE 1: vanilla build and runtime smoke tests ----------
+      - name: '[Stage 1] Build vanilla Docker image (frappe:latest)'
         run: bash scripts/ci/vanilla-build.sh
 
-      - name: Test Nginx runtime & assets.json/static asset serving
+      - name: '[Stage 1] Test Nginx runtime & assets.json/static asset serving'
         run: bash scripts/ci/vanilla-test-nginx.sh
 
-      - name: Test Socket.io runtime
+      - name: '[Stage 1] Test Socket.io runtime'
         run: bash scripts/ci/vanilla-test-socketio.sh
 
-      - name: Test Gunicorn & Python runtime
+      - name: '[Stage 1] Test Gunicorn & Python runtime'
         run: bash scripts/ci/vanilla-test-gunicorn.sh
 
-      - name: Test Queue / Worker runtime
+      - name: '[Stage 1] Test Queue / Worker runtime'
         run: bash scripts/ci/vanilla-test-worker.sh
 
-      # ---------- Granian build (layered on the local frappe:latest) ----------
-      - name: Build Granian variant image (layered on vanilla, same daemon)
+      # ---------- STAGE 2: Granian build and image validation ----------
+      - name: '[Stage 2] Build Granian variant image (layered on vanilla, same daemon)'
         run: bash scripts/ci/granian-build.sh
 
-      - name: Verify Granian installed + image size report
+      - name: '[Stage 2] Verify Granian installed + image size report'
         run: bash scripts/ci/granian-verify.sh
 
-      # ===== Vanilla Compose / OTEL integration (project: ci-otel) =====
-      - name: Cleanup lingering vanilla containers
+      # ===== STAGE 3: Vanilla Compose / OTEL integration (project: ci-otel) =====
+      - name: '[Stage 3] Cleanup lingering vanilla containers'
         env:
           CI_PROJECT: ci-otel
         run: bash scripts/ci/compose-cleanup.sh -v
 
-      - name: Start DB, Redis & OTEL Collector (vanilla)
+      - name: '[Stage 3] Start DB, Redis & OTEL Collector (vanilla)'
         env:
           CI_PROJECT: ci-otel
           HTTP_PORT: '18085'
         run: bash scripts/ci/compose-start-deps.sh
 
-      - name: Run init container explicitly (vanilla, live logs)
+      - name: '[Stage 3] Run init container explicitly (vanilla, live logs)'
         env:
           CI_PROJECT: ci-otel
           HTTP_PORT: '18085'
           OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
         run: bash scripts/ci/compose-init.sh
 
-      - name: Start remaining stack (vanilla, OTEL on)
+      - name: '[Stage 3] Start remaining stack (vanilla, OTEL on)'
         env:
           CI_PROJECT: ci-otel
           HTTP_PORT: '18085'
@@ -126,17 +126,17 @@ jobs:
           NGINX_OTEL_ENDPOINT: otel-collector:4317
         run: bash scripts/ci/compose-start-stack.sh
 
-      - name: Wait for vanilla web readiness
+      - name: '[Stage 3] Wait for vanilla web readiness'
         env:
           CI_PROJECT: ci-otel
         run: bash scripts/ci/compose-wait-web.sh
 
-      - name: Assert OTEL spans (vanilla, both legs + shared trace)
+      - name: '[Stage 3] Assert OTEL spans (vanilla, both legs + shared trace)'
         env:
           CI_PROJECT: ci-otel
         run: bash scripts/ci/compose-otel-spans.sh
 
-      - name: Assert gate-off (no spans when endpoint empty)
+      - name: '[Stage 3] Assert gate-off (no spans when endpoint empty)'
         env:
           CI_PROJECT: ci-otel
           HTTP_PORT: '18085'
@@ -144,33 +144,33 @@ jobs:
           NGINX_OTEL_ENDPOINT: ''
         run: bash scripts/ci/compose-gate-off.sh
 
-      - name: Diagnostic dump on failure (vanilla)
+      - name: '[Stage 3] Diagnostic dump on failure (vanilla)'
         if: failure()
         env:
           CI_PROJECT: ci-otel
         run: bash scripts/ci/compose-diag.sh
 
-      - name: Teardown vanilla
+      - name: '[Stage 3] Teardown vanilla'
         if: always()
         env:
           CI_PROJECT: ci-otel
         run: bash scripts/ci/compose-teardown.sh
 
-      # ===== Granian Compose / OTEL / CRUD integration (project: ci-granian) =====
-      - name: Cleanup lingering Granian containers
+      # ===== STAGE 4: Granian Compose / OTEL / CRUD integration (project: ci-granian) =====
+      - name: '[Stage 4] Cleanup lingering Granian containers'
         env:
           CI_PROJECT: ci-granian
           EXTRA_FILES: resources/compose.granian-ci.yml
         run: bash scripts/ci/compose-cleanup.sh
 
-      - name: Start DB, Redis & OTEL Collector (Granian)
+      - name: '[Stage 4] Start DB, Redis & OTEL Collector (Granian)'
         env:
           CI_PROJECT: ci-granian
           EXTRA_FILES: resources/compose.granian-ci.yml
           HTTP_PORT: '18086'
         run: bash scripts/ci/compose-start-deps.sh
 
-      - name: Run init container explicitly (Granian, live logs)
+      - name: '[Stage 4] Run init container explicitly (Granian, live logs)'
         env:
           CI_PROJECT: ci-granian
           EXTRA_FILES: resources/compose.granian-ci.yml
@@ -178,7 +178,7 @@ jobs:
           OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
         run: bash scripts/ci/compose-init.sh
 
-      - name: Start remaining stack (Granian web + OTEL on)
+      - name: '[Stage 4] Start remaining stack (Granian web + OTEL on)'
         env:
           CI_PROJECT: ci-granian
           EXTRA_FILES: resources/compose.granian-ci.yml
@@ -187,45 +187,45 @@ jobs:
           NGINX_OTEL_ENDPOINT: otel-collector:4317
         run: bash scripts/ci/compose-start-stack.sh
 
-      - name: Wait for Granian web readiness
+      - name: '[Stage 4] Wait for Granian web readiness'
         env:
           CI_PROJECT: ci-granian
           EXTRA_FILES: resources/compose.granian-ci.yml
           CI_WAIT_ROUNDS: '120'
         run: bash scripts/ci/compose-wait-web.sh
 
-      - name: Assert Granian is the serving process
+      - name: '[Stage 4] Assert Granian is the serving process'
         env:
           CI_PROJECT: ci-granian
           EXTRA_FILES: resources/compose.granian-ci.yml
         run: bash scripts/ci/granian-verify-serving.sh
 
-      - name: Assert API through granian returns pong
+      - name: '[Stage 4] Assert API through granian returns pong'
         env:
           CI_PROJECT: ci-granian
           EXTRA_FILES: resources/compose.granian-ci.yml
         run: bash scripts/ci/granian-pong.sh
 
-      - name: Assert OTEL spans through granian (both legs + shared trace)
+      - name: '[Stage 4] Assert OTEL spans through granian (both legs + shared trace)'
         env:
           CI_PROJECT: ci-granian
           EXTRA_FILES: resources/compose.granian-ci.yml
         run: bash scripts/ci/compose-otel-spans.sh
 
-      - name: Assert CRUD through granian (perf.sh ToDo shape)
+      - name: '[Stage 4] Assert CRUD through granian (perf.sh ToDo shape)'
         env:
           CI_PROJECT: ci-granian
           EXTRA_FILES: resources/compose.granian-ci.yml
         run: bash scripts/ci/granian-crud.sh
 
-      - name: Diagnostic dump on failure (Granian)
+      - name: '[Stage 4] Diagnostic dump on failure (Granian)'
         if: failure()
         env:
           CI_PROJECT: ci-granian
           EXTRA_FILES: resources/compose.granian-ci.yml
         run: bash scripts/ci/compose-diag.sh
 
-      - name: Teardown Granian
+      - name: '[Stage 4] Teardown Granian'
         if: always()
         env:
           CI_PROJECT: ci-granian
@@ -241,7 +241,7 @@ jobs:
       # main push or a manual workflow_dispatch with push_to_registry: true.
       # NEVER on pull_request.
       # -------------------------------------------------------------------
-      - name: Login to Container Registry
+      - name: '[Stage 5] Login to Container Registry'
         if: ${{ github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true) }}
         uses: docker/login-action@v3
         with:
@@ -249,14 +249,14 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME || secrets.DIGITALOCEAN_EMAIL }}
           password: ${{ secrets.REGISTRY_PASSWORD || secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
-      - name: Publish vanilla image (the tested frappe:latest)
+      - name: '[Stage 5] Publish vanilla image (the tested frappe:latest)'
         if: ${{ github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true) }}
         run: bash scripts/ci/publish-vanilla.sh
 
-      - name: Publish Granian image (the tested :latest-granian)
+      - name: '[Stage 5] Publish Granian image (the tested :latest-granian)'
         if: ${{ github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true) }}
         run: bash scripts/ci/publish-granian.sh
 
-      - name: Verify published tags resolve to distinct digests
+      - name: '[Stage 5] Verify published tags resolve to distinct digests'
         if: ${{ github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true) }}
         run: bash scripts/ci/publish-verify.sh
