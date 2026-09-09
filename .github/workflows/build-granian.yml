@@ -249,7 +249,7 @@ jobs:
             *) bad "list HTTP $HTTP_STATUS: $HTTP_BODY"; exit 1; ;;
           esac
           # update
-          status $CMD -X PUT -b "$CK" -H "$HDR" -H "Content-Type: application/json" -d '{\"data\":{\"status\":\"Closed\"}}' "http://127.0.0.1:8080/api/resource/ToDo/$NAME"
+          status $CMD -X PUT -b "$CK" -H "$HDR" -H "Content-Type: application/json" -d "{\"data\":{\"status\":\"Closed\"}}" "http://127.0.0.1:8080/api/resource/ToDo/$NAME"
           [ "$HTTP_STATUS" = 200 ] && ok "update item (status -> Closed)" || { bad "update HTTP $HTTP_STATUS: $HTTP_BODY"; exit 1; }
           # delete
           status $CMD -X DELETE -b "$CK" -H "$HDR" "http://127.0.0.1:8080/api/resource/ToDo/$NAME"
