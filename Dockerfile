@@ -166,9 +166,14 @@ FROM build AS builder
 COPY --chown=frappe:frappe frappe/ /tmp/frappe/
 COPY --chown=frappe:frappe patches/ /tmp/patches/
 COPY --chown=frappe:frappe scripts/ /tmp/scripts/
-# Drop the submodule's .git gitlink (a broken pointer in the container) so
-# apply-patches.sh runs in plain-copy mode and bench init copies the tree.
-RUN rm -f /tmp/frappe/.git \
+# bench init (frappe-bench) requires --frappe-path to be a Git repository, but
+# the build context excludes .git (see .dockerignore), and /tmp/frappe is a
+# plain copy of the submodule tree. Re-initialise a fresh repo here so bench
+# init succeeds. apply-patches.sh then runs in git-backed mode against this tree.
+
+RUN git init /tmp/frappe \
+    && git -C /tmp/frappe add -A \
+    && git -C /tmp/frappe -c user.email=x -c user.name=x commit -qm base \
     && chmod +x /tmp/scripts/apply-patches.sh \
     && /tmp/scripts/apply-patches.sh
 
