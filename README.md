@@ -55,16 +55,28 @@ ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:base
 ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest-granian
 ```
 
+The image relationships are:
+
+```text
+base       = unpatched reference variant
+latest     = patched production variant
+latest-granian = latest + Granian
+```
+
+`base` and `latest` are sibling variants, not a parent-child chain. Both are built from
+the same pinned `./frappe` source and share the dependency/runtime setup, but `latest`
+applies the local patches while `base` does not:
+
 - `latest` — the production image: the pinned `./frappe` source with `patches/` applied
   (Dockerfile target `frappe`, `APPLY_PATCHES=true`).
 - `base` — an unpatched reference image built from the same pinned `./frappe` source
   without any local patches (Dockerfile target `frappe-base`, `APPLY_PATCHES=false`).
-- `latest-granian` — Granian layered on the patched `latest` image built in the same
-  CI build/test job (Dockerfile.granian, `BASE_IMAGE=frappe:latest`).
+- `latest-granian` — Granian layered directly on the patched `latest` image built in the
+  same CI build/test job (Dockerfile.granian, `BASE_IMAGE=frappe:latest`).
 
-The two `latest`/`base` variants share all dependency/runtime layers and differ only by
-whether `./patches` are applied. No SHA, commit, run, variant, or temporary registry
-tags are published.
+Thus, the effective inheritance is `latest -> latest-granian`; `base` is the unpatched
+sibling/reference image, not the parent of `latest`. No SHA, commit, run, variant, or
+temporary registry tags are published.
 
 ## Patch scope
 
