@@ -32,6 +32,11 @@ for _ in $(seq 1 15); do
   prev="$cur"
   sleep 1
 done
+# The collector's batch timeout is 5s. The stabilization loop above can exit as
+# soon as max_start looks stable, but a final 5s batch flush may still land right
+# after it breaks. Always wait at least 6s so the whole OTEL-ON batch is
+# guaranteed flushed to the collector log before we sample the gate-off reference.
+sleep 6
 before_ref="$prev"
 
 compose up -d
