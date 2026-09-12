@@ -256,6 +256,7 @@ COPY --chown=frappe:frappe resources/gunicorn-otel-conf.py /home/frappe/frappe-b
 FROM base AS deploy
 
 USER frappe
+RUN mkdir -p /home/frappe/logs /home/frappe/frappe-bench/logs
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench/sites/assets/assets.json /opt/defaults/assets.json
 

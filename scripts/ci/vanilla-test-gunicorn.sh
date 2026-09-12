@@ -15,6 +15,10 @@ docker run --rm frappe:latest bash -c '
     if [ -n "$CODE" ] && [ "$CODE" != 000 ]; then ok=1; break; fi
     sleep 1
   done
-  if [ "$ok" != 1 ]; then cat /tmp/gunicorn.log; exit 1; fi
+  if [ "$ok" != 1 ] || [ "$CODE" != 200 ]; then
+    cat /tmp/gunicorn.log
+    echo "Gunicorn answered /api/method/ping with HTTP $CODE; expected HTTP 200"
+    exit 1
+  fi
   echo "Gunicorn answered /api/method/ping with HTTP $CODE"
 '
