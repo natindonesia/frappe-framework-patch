@@ -1,0 +1,11 @@
+diff --git a/frappe/templates/base.html b/frappe/templates/base.html
+index 03920fd27a99f6972ad290289ee97b8100740fdc..c6845cd258456d3d1549ff160f3f638ac82d59e2 100644
+--- a/frappe/templates/base.html
++++ b/frappe/templates/base.html
+@@ -1,5 +1,5 @@
+ <!DOCTYPE html>
+-<!-- Built on Frappe. https://frappeframework.com/ -->
++
+ <html lang="{{boot.lang}}" dir="{{ 'rtl' if is_rtl() else 'ltr' }}">
+ <head>
+ 	<meta charset="utf-8">
