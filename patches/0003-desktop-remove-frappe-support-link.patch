@@ -1,10 +1,10 @@
 diff --git a/frappe/desk/page/desktop/desktop.js b/frappe/desk/page/desktop/desktop.js
-index ba097684660a2797a24a8415f728cff54be0e6a9..2fa95fe97aa2eebc1e909cd708c119191ee74510 100644
+index b53e7e6..c5fea48 100644
 --- a/frappe/desk/page/desktop/desktop.js
 +++ b/frappe/desk/page/desktop/desktop.js
-@@ -455,13 +455,6 @@ class DesktopPage {
- 					return frappe.ui.toolbar.show_about();
+@@ -559,13 +559,6 @@ class DesktopPage {
  				},
+ 				order: 30,
  			},
 -			{
 -				icon: "support",

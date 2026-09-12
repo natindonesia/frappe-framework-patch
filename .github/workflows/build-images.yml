@@ -38,8 +38,12 @@ jobs:
           submodules: recursive
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Build vanilla Docker image (frappe:latest)
+      - name: Build patched Docker image (frappe:latest)
         run: bash scripts/ci/vanilla-build.sh
+      - name: Build unpatched base Docker image (frappe:base)
+        run: bash scripts/ci/base-build.sh
+      - name: Verify base is unpatched and latest is patched
+        run: bash scripts/ci/base-verify.sh
       - name: Test Nginx runtime and assets
         run: bash scripts/ci/vanilla-test-nginx.sh
       - name: Test Socket.IO runtime
@@ -48,8 +52,8 @@ jobs:
         run: bash scripts/ci/vanilla-test-gunicorn.sh
       - name: Test Queue and Worker runtime
         run: bash scripts/ci/vanilla-test-worker.sh
-      - name: Export tested vanilla image
-        run: docker save frappe:latest | gzip -1 > /tmp/frappe-vanilla.tar.gz
+      - name: Export tested vanilla and base images
+        run: docker save frappe:latest frappe:base | gzip -1 > /tmp/frappe-vanilla.tar.gz
       - name: Upload tested vanilla image
         uses: actions/upload-artifact@v4
         with:
@@ -83,7 +87,7 @@ jobs:
       - name: Verify Granian installation and image size
         run: bash scripts/ci/granian-verify.sh
       - name: Export tested images
-        run: docker save frappe:latest frappe-granian:latest | gzip -1 > /tmp/tested-images.tar.gz
+        run: docker save frappe:latest frappe:base frappe-granian:latest | gzip -1 > /tmp/tested-images.tar.gz
       - name: Upload tested images
         uses: actions/upload-artifact@v4
         with:
@@ -202,8 +206,10 @@ jobs:
           registry: ${{ env.REGISTRY_URL }}
           username: ${{ secrets.REGISTRY_USERNAME || secrets.DIGITALOCEAN_EMAIL }}
           password: ${{ secrets.REGISTRY_PASSWORD || secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-      - name: Publish vanilla latest
+      - name: Publish patched latest
         run: bash scripts/ci/publish-vanilla.sh
+      - name: Publish unpatched base
+        run: bash scripts/ci/publish-base.sh
       - name: Publish Granian latest-granian
         run: bash scripts/ci/publish-granian.sh
       - name: Verify published tags have distinct digests

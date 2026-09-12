@@ -32,9 +32,10 @@ The Docker/CI workflow is adapted to this patch repository's submodule/patch mod
 context vendors the required `resources/`, `docker-compose.yml`,
 `Dockerfile.granian`, and the custom OTEL overlay files in `runtime/`).
 
-- `build-images.yml` — on push / pull_request. Builds and tests the vanilla and
-  Granian images in one job, then on an approved main push publishes exactly
-  `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest` and
+- `build-images.yml` — on push / pull_request. Builds and tests the patched `latest`,
+  the unpatched `base`, and the Granian images, then on an approved main push
+  publishes exactly `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest`,
+  `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:base`, and
   `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest-granian`.
 - `update-upstream.yml` is manual (`workflow_dispatch`). It advances `frappe/` to the
   latest `origin/version-16`, validates the patch set, and pushes only the parent
@@ -50,11 +51,20 @@ Images are published only as:
 
 ```text
 ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest
+${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:base
 ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest-granian
 ```
 
-The Granian image is layered on the vanilla image built in the same CI build/test
-job. No SHA, commit, run, variant, or temporary registry tags are published.
+- `latest` — the production image: the pinned `./frappe` source with `patches/` applied
+  (Dockerfile target `frappe`, `APPLY_PATCHES=true`).
+- `base` — an unpatched reference image built from the same pinned `./frappe` source
+  without any local patches (Dockerfile target `frappe-base`, `APPLY_PATCHES=false`).
+- `latest-granian` — Granian layered on the patched `latest` image built in the same
+  CI build/test job (Dockerfile.granian, `BASE_IMAGE=frappe:latest`).
+
+The two `latest`/`base` variants share all dependency/runtime layers and differ only by
+whether `./patches` are applied. No SHA, commit, run, variant, or temporary registry
+tags are published.
 
 ## Patch scope
 

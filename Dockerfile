@@ -1,6 +1,28 @@
 # syntax=docker/dockerfile:1.4
 ARG PYTHON_VERSION=3.14.2
 ARG DEBIAN_BASE=bookworm
+
+# =============================================================================
+# Two published variants share ALL dependency/runtime/build layers and differ
+# ONLY by whether the local patch set is applied to the pinned ./frappe source
+# before `bench init`:
+#
+#   APPLY_PATCHES=true  -> variant=latest (patched, production default)
+#                          built as `frappe:latest` / `<reg>/frappe:latest`
+#   APPLY_PATCHES=false -> variant=base (unpatched reference image)
+#                          built as `frappe:base` / `<reg>/frappe:base`
+#
+# Select a variant with `--target`:
+#   docker build --target frappe      (latest / patched)  -- DEFAULT target
+#   docker build --target frappe-base (base / unpatched)
+#
+# Both final targets COPY the bench tree from the SAME named `builder` stage;
+# the builder's patch behavior is gated by the `APPLY_PATCHES` ARG, so each
+# variant is a real, distinct artifact (separate BuildKit cache keys because
+# the resolved ARG differs), not a relabel of the other.
+# =============================================================================
+ARG APPLY_PATCHES=true
+
 FROM python:${PYTHON_VERSION}-slim-${DEBIAN_BASE} AS base
 
 ARG WKHTMLTOPDF_VERSION=0.12.6.1-3
@@ -112,7 +134,6 @@ RUN pip3 install frappe-bench \
     && sed -i '/user www-data/d' /etc/nginx/nginx.conf \
     && ln -sf /dev/stdout /var/log/nginx/access.log \
     && ln -sf /dev/stderr /var/log/nginx/error.log \
-    && touch /run/nginx.pid \
     && chown -R frappe:frappe /templates/nginx \
     && chown -R frappe:frappe /etc/nginx/conf.d \
     && chown -R frappe:frappe /etc/nginx/nginx.conf \
@@ -120,6 +141,7 @@ RUN pip3 install frappe-bench \
     && chown -R frappe:frappe /var/log/nginx \
     && mkdir -p /var/lib/nginx /var/cache/nginx \
     && chown -R frappe:frappe /var/lib/nginx /var/cache/nginx \
+    && touch /run/nginx.pid \
     && chown -R frappe:frappe /run/nginx.pid
 
 # =============================================================================
@@ -151,33 +173,49 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # =============================================================================
-# Builder stage — patched Frappe source + bench init
-# Changes on every source push. This is the only frequently-invalidated layer.
-#
-# Patch-repo adaptation: this repository has no vendored Frappe tree at the
-# build-context root. The Frappe source is the pinned ./frappe submodule. We
-# copy its tree, apply ./patches (scripts/apply-patches.sh), then bench init
-# from the patched tree — identical to the upstream Dockerfile's flow, which
-# bench-inits from the repo root.
+# Builder stage — shared by BOTH variants. Copies pinned ./frappe source,
+# applies ./patches ONLY when APPLY_PATCHES=true, then bench-inits the tree.
+# This is the only frequently-invalidated layer; identical to the upstream
+# recipe except the patch gate.
 # =============================================================================
 FROM build AS builder
 
-# Assemble patched Frappe source from the pinned submodule + patch set.
+# Must re-declare APPLY_PATCHES INSIDE this stage. A global ARG declared before
+# the first FROM is NOT in scope for RUN instructions in a later stage; without
+# this re-declaration $APPLY_PATCHES resolves to EMPTY inside the RUN below, so
+# the patch gate `[ "$APPLY_PATCHES" = "true" ]` would be false for BOTH
+# variants and `latest` would silently be built unpatched.
+ARG APPLY_PATCHES
+
+# Assemble source from the pinned submodule; conditionally apply the patch set.
 COPY --chown=frappe:frappe frappe/ /tmp/frappe/
 COPY --chown=frappe:frappe patches/ /tmp/patches/
 COPY --chown=frappe:frappe scripts/ /tmp/scripts/
-# bench init (frappe-bench) requires --frappe-path to be a Git repository, but
-# the submodule .git file points to the parent checkout's module metadata and is
-# unusable inside the image. Remove it, then re-initialise a fresh repo here so
-# bench init succeeds. apply-patches.sh then runs in git-backed mode.
 
+# bench init (frappe-bench) requires --frappe-path to be a Git repository, but
+# the submodule .git is unusable inside the image. Remove it, then re-initialise
+# a fresh repo here so bench init succeeds. apply-patches.sh then runs in
+# git-backed mode when the patch set is requested.
+#
+# CRITICAL: bench init does a REAL `git clone` of --frappe-path into apps/frappe,
+# so it only sees COMMITTED tree state. apply-patches.sh modifies the working
+# tree; we MUST commit it afterwards, otherwise the bench clone would carry the
+# unpatched `base` commit into apps/frappe and `latest` would be silently built
+# unpatched. base keeps only the pristine `base` commit (genuinely unpatched);
+# latest adds a `patched` commit on top so the clone gets the patched tree.
 RUN rm -f /tmp/frappe/.git \
     && git config --global --add safe.directory /tmp/frappe \
     && git init /tmp/frappe \
     && git -C /tmp/frappe add -A \
     && git -C /tmp/frappe -c user.email=x -c user.name=x commit -qm base \
     && chmod +x /tmp/scripts/apply-patches.sh \
-    && /tmp/scripts/apply-patches.sh
+    && if [ "$APPLY_PATCHES" = "true" ]; then \
+         /tmp/scripts/apply-patches.sh \
+         && git -C /tmp/frappe add -A \
+         && git -C /tmp/frappe -c user.email=x -c user.name=x commit -qm patched; \
+       else \
+         echo "APPLY_PATCHES=$APPLY_PATCHES => unpatched base variant; NOT applying ./patches."; \
+       fi
 
 RUN su - frappe -c 'git config --global --add safe.directory "*"' \
     && su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:$PATH && bench init \
@@ -200,39 +238,51 @@ RUN su - frappe -c '/home/frappe/frappe-bench/env/bin/pip install \
       opentelemetry-exporter-otlp-proto-http \
       opentelemetry-instrumentation-wsgi'
 
-# Overlay the OTEL emitter files onto the bench tree. bench init git-clones
-# the app, so uncommitted files would otherwise never reach the image and
-# gunicorn would crash-loop on the missing gunicorn-otel-conf.py. COPY from
-# the build context wins over the git-cloned copies, so this stays correct
-# even after these files are eventually committed (identical content).
-# Patch-repo adaptation: these custom overlay files are vendored in ./runtime
-# (they are not part of the pristine upstream submodule).
+# Overlay the OTEL emitter files onto the bench tree. bench init git-clones the
+# app, so uncommitted files would otherwise never reach the image and gunicorn
+# would crash-loop on the missing gunicorn-otel-conf.py. COPY from the build
+# context wins over the git-cloned copies. These overlay files are vendored in
+# ./runtime (not part of the pristine upstream submodule).
 COPY --chown=frappe:frappe runtime/otel.py /home/frappe/frappe-bench/apps/frappe/frappe/otel.py
 COPY --chown=frappe:frappe runtime/otel_wsgi.py /home/frappe/frappe-bench/apps/frappe/frappe/otel_wsgi.py
 COPY --chown=frappe:frappe runtime/test_otel.py /home/frappe/frappe-bench/apps/frappe/frappe/tests/test_otel.py
 COPY --chown=frappe:frappe resources/gunicorn-otel-conf.py /home/frappe/frappe-bench/apps/frappe/resources/gunicorn-otel-conf.py
 
 # =============================================================================
-# Final stage — runtime only, no build deps
+# Final stages — runtime only, no build deps. Both funnel the shared builder
+# output through identical runtime wiring; they differ only in the variant labels
+# and the APPLY_PATCHES ARG that selects which bench the builder produced.
 # =============================================================================
-FROM base AS frappe
+FROM base AS deploy
 
 USER frappe
-
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench/sites/assets/assets.json /opt/defaults/assets.json
 
-
-WORKDIR /home/frappe/frappe-bench
-
-RUN echo "echo \"Commands restricted in production container, Read FAQ before you proceed: https://frappe.io/ctr-faq\"" >> ~/.bashrc
-
+# =============================================================================
+# Target frappe-base : variant=base (unpatched reference image).
+# =============================================================================
+FROM deploy AS frappe-base
+LABEL org.opencontainers.image.variant=base \
+      org.opencontainers.image.patches-applied=false
 VOLUME [ \
   "/home/frappe/frappe-bench/sites", \
   "/home/frappe/frappe-bench/logs" \
 ]
+COPY --chmod=0755 resources/init.sh /usr/local/bin/init.sh
+COPY --chmod=0755 resources/fix-db-users.sh /scripts/fix-db-users.sh
 
-# Entrypoint script + DB-user fixup for the compose `init` service
-# (entrypoint: /bin/bash /usr/local/bin/init.sh) and the scripts it invokes.
+# =============================================================================
+# Target frappe (DEFAULT) : variant=latest (patched, production image).
+# =============================================================================
+FROM deploy AS frappe
+LABEL org.opencontainers.image.variant=latest \
+      org.opencontainers.image.patches-applied=true
+WORKDIR /home/frappe/frappe-bench
+RUN echo "echo \"Commands restricted in production container, Read FAQ before you proceed: https://frappe.io/ctr-faq\"" >> ~/.bashrc
+VOLUME [ \
+  "/home/frappe/frappe-bench/sites", \
+  "/home/frappe/frappe-bench/logs" \
+]
 COPY --chmod=0755 resources/init.sh /usr/local/bin/init.sh
 COPY --chmod=0755 resources/fix-db-users.sh /scripts/fix-db-users.sh

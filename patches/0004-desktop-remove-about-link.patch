@@ -1,10 +1,10 @@
 diff --git a/frappe/desk/page/desktop/desktop.js b/frappe/desk/page/desktop/desktop.js
-index 2fa95fe97aa2eebc1e909cd708c119191ee74510..1380894cc38883336e0b9ad2e20a094adb34411b 100644
+index c5fea48..fcf8953 100644
 --- a/frappe/desk/page/desktop/desktop.js
 +++ b/frappe/desk/page/desktop/desktop.js
-@@ -448,13 +448,6 @@ class DesktopPage {
- 					new frappe.ui.ThemeSwitcher().show();
+@@ -551,14 +551,6 @@ class DesktopPage {
  				},
+ 				order: 20,
  			},
 -			{
 -				icon: "info",
@@ -12,6 +12,7 @@ index 2fa95fe97aa2eebc1e909cd708c119191ee74510..1380894cc38883336e0b9ad2e20a094a
 -				onClick: function () {
 -					return frappe.ui.toolbar.show_about();
 -				},
+-				order: 30,
 -			},
  			{
  				icon: "rotate-ccw",

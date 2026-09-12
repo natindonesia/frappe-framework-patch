@@ -1,17 +1,33 @@
 diff --git a/frappe/public/js/frappe/ui/sidebar/sidebar.js b/frappe/public/js/frappe/ui/sidebar/sidebar.js
-index 7c41192d5ff3b5b436dab03204045848fbca8886..0fde62610eceeca77b904519f872e5964be46687 100644
+index f06612f..0c2b5ea 100644
 --- a/frappe/public/js/frappe/ui/sidebar/sidebar.js
 +++ b/frappe/public/js/frappe/ui/sidebar/sidebar.js
-@@ -111,21 +111,6 @@ frappe.ui.Sidebar = class Sidebar {
+@@ -97,37 +97,6 @@ frappe.ui.Sidebar = class Sidebar {
+ 
  	get_crm_banner(module) {
  		if (module != "CRM") return;
- 
+-
 -		const icon =
 -			$(`<svg width="16" height="16" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
 -<path d="M0 11.2C0 7.27963 0 5.31945 0.762954 3.82207C1.43407 2.50493 2.50493 1.43407 3.82207 0.762954C5.31945 0 7.27963 0 11.2 0H16.8C20.7204 0 22.6806 0 24.1779 0.762954C25.4951 1.43407 26.5659 2.50493 27.237 3.82207C28 5.31945 28 7.27963 28 11.2V16.8C28 20.7204 28 22.6806 27.237 24.1779C26.5659 25.4951 25.4951 26.5659 24.1779 27.237C22.6806 28 20.7204 28 16.8 28H11.2C7.27963 28 5.31945 28 3.82207 27.237C2.50493 26.5659 1.43407 25.4951 0.762954 24.1779C0 22.6806 0 20.7204 0 16.8V11.2Z" fill="#DB4EE0"/>
 -<path d="M5.02441 6.58252V9.09486H20.4627V10.9791L15.0135 16.3806V19.3201H12.9676V16.3806C12.9676 16.3806 9.78529 13.1774 8.62962 12.0469H5.03698L10.0156 17.0087C10.3045 17.2851 10.4678 17.6745 10.4678 18.0765V21.041L17.5259 21.0661V18.0765C17.5259 17.6745 17.6892 17.2851 17.9781 17.0087L22.9751 12.0343V6.58252H5.02441Z" fill="#F1FCFF"/>
 -</svg>
 -`);
+-
+-		// if CRM is installed on the site, link to the route configured via add_to_apps_screen
+-		const installed_app = (frappe.boot.apps_data.apps || []).find((app) => app.name === "crm");
+-		if (installed_app && installed_app.route) {
+-			const title = __("Switch to CRM");
+-			const message = __("Open Frappe CRM");
+-			this.promotional_banners.push({
+-				title,
+-				message,
+-				link: installed_app.route,
+-				icon,
+-				is_internal: true,
+-			});
+-			return;
+-		}
 -
 -		const title = __("Switch to Frappe CRM");
 -		const message = __(
