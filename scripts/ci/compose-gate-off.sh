@@ -13,9 +13,26 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # require that NO span with a Start time after that reference appears. Buffered
 # pre-existing spans carry their original (pre-gate-off) Start times, so they
 # are correctly excluded.
-before_ref=$(compose logs otel-collector | awk '
-  /Start time/ { t=$0; sub(/^.*Start time[[:space:]]*:[[:space:]]*/,"",t); if (t > m) m=t }
-  END { print m }')
+# The collector's batch processor buffers spans and only logs them after its
+# 5s timeout. After the OTEL-ON CRUD phase the final spans may still be
+# buffered, so sampling the reference immediately would miss them and a
+# late-flushed pre-restart span (Start time just after that too-early ref)
+# would be falsely flagged as a leak. Wait until the max logged Start time
+# stops increasing (collector has flushed the whole OTEL-ON batch) before
+# recording the reference.
+max_start() {
+  compose logs otel-collector | awk '
+    /Start time/ { t=$0; sub(/^.*Start time[[:space:]]*:[[:space:]]*/,"",t); if (t > m) m=t }
+    END { print m }'
+}
+prev=""
+for _ in $(seq 1 15); do
+  cur=$(max_start)
+  [ -n "$prev" ] && [ "$cur" = "$prev" ] && break
+  prev="$cur"
+  sleep 1
+done
+before_ref="$prev"
 
 compose up -d
 sleep 10
