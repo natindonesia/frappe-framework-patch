@@ -1,6 +1,8 @@
-# Consolidated Docker + Granian pipeline. Each stage is a separate Actions job.
-# Images are transferred as artifacts so dependent jobs test and publish the
-# exact images built by the preceding jobs; no temporary registry tags exist.
+# Consolidated Docker + Granian pipeline. The three published variants
+# (base / latest / latest-granian) are built+pre-validated in ONE job and
+# transferred as an exact Docker archive; then a single common test contract
+# runs against ALL THREE via a matrix; publish happens only after every matrix
+# entry passes. No downstream rebuild, no temporary registry tags.
 name: Build & Test Docker and Granian Images
 
 on:
@@ -25,11 +27,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # STAGE 1: build and smoke-test the vanilla image.
-  vanilla:
-    name: 'Stage 1 - Vanilla build and smoke tests'
+  # STAGE 1: build base + latest, build latest-granian FROM the tested local
+  # latest, pre-validate each, then export the exact three images.
+  images:
+    name: 'Build + pre-validate base/latest/latest-granian'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Checkout patch repository with Frappe submodule
         uses: actions/checkout@v4
@@ -42,51 +45,21 @@ jobs:
         run: bash scripts/ci/vanilla-build.sh
       - name: Build unpatched base Docker image (frappe:base)
         run: bash scripts/ci/base-build.sh
-      - name: Verify base is unpatched and latest is patched
+      - name: Pre-validate base unpatched and latest patched
         run: bash scripts/ci/base-verify.sh
-      - name: Test Nginx runtime and assets
+      - name: Pre-validate Nginx runtime and assets (latest)
         run: bash scripts/ci/vanilla-test-nginx.sh
-      - name: Test Socket.IO runtime
+      - name: Pre-validate Socket.IO runtime (latest)
         run: bash scripts/ci/vanilla-test-socketio.sh
-      - name: Test Gunicorn and Python runtime
+      - name: Pre-validate Gunicorn and Python runtime (latest)
         run: bash scripts/ci/vanilla-test-gunicorn.sh
-      - name: Test Queue and Worker runtime
+      - name: Pre-validate Queue and Worker runtime (latest)
         run: bash scripts/ci/vanilla-test-worker.sh
-      - name: Export tested vanilla and base images
-        run: docker save frappe:latest frappe:base | gzip -1 > /tmp/frappe-vanilla.tar.gz
-      - name: Upload tested vanilla image
-        uses: actions/upload-artifact@v4
-        with:
-          name: tested-vanilla-image
-          path: /tmp/frappe-vanilla.tar.gz
-          retention-days: 1
-
-  # STAGE 2: load the tested vanilla image, layer Granian on it, then test it.
-  granian:
-    name: 'Stage 2 - Granian build and image validation'
-    needs: vanilla
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - name: Checkout patch repository with Frappe submodule
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: recursive
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Download tested vanilla image
-        uses: actions/download-artifact@v4
-        with:
-          name: tested-vanilla-image
-          path: /tmp
-      - name: Load tested vanilla image
-        run: gunzip -c /tmp/frappe-vanilla.tar.gz | docker load
-      - name: Build Granian image layered on tested vanilla image
+      - name: Build Granian image layered on tested local frappe:latest
         run: bash scripts/ci/granian-build.sh
-      - name: Verify Granian installation and image size
+      - name: Pre-validate Granian installation and import
         run: bash scripts/ci/granian-verify.sh
-      - name: Export tested images
+      - name: Export tested base/latest/latest-granian images
         run: docker save frappe:latest frappe:base frappe-granian:latest | gzip -1 > /tmp/tested-images.tar.gz
       - name: Upload tested images
         uses: actions/upload-artifact@v4
@@ -95,18 +68,23 @@ jobs:
           path: /tmp/tested-images.tar.gz
           retention-days: 1
 
-  # STAGE 3: run the complete vanilla and Granian integration suites.
-  integration:
-    name: 'Stage 3 - Compose, OTEL, CRUD, and teardown tests'
-    needs: granian
+  # STAGE 2: run the SAME common compose/OTEL/CRUD contract against all three
+  # variants. Consumes the exact archive; never rebuilds or pulls.
+  variant-matrix:
+    name: 'Matrix - common contract (${{ matrix.variant }})'
+    needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, latest, latest-granian]
     steps:
-      - name: Checkout patch repository with Frappe submodule
+      - name: Checkout scripts and compose resources
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          submodules: recursive
+          fetch-depth: 1
+          submodules: false
       - name: Download tested images
         uses: actions/download-artifact@v4
         with:
@@ -114,77 +92,13 @@ jobs:
           path: /tmp
       - name: Load tested images
         run: gunzip -c /tmp/tested-images.tar.gz | docker load
+      - name: Run common contract for ${{ matrix.variant }}
+        run: bash scripts/ci/matrix-variant-test.sh "${{ matrix.variant }}"
 
-      - name: Vanilla cleanup
-        env: { CI_PROJECT: ci-otel }
-        run: bash scripts/ci/compose-cleanup.sh -v
-      - name: Vanilla start dependencies
-        env: { CI_PROJECT: ci-otel, HTTP_PORT: '18085' }
-        run: bash scripts/ci/compose-start-deps.sh
-      - name: Vanilla run init
-        env: { CI_PROJECT: ci-otel, HTTP_PORT: '18085', OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318 }
-        run: bash scripts/ci/compose-init.sh
-      - name: Vanilla start application stack
-        env: { CI_PROJECT: ci-otel, HTTP_PORT: '18085', OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318, NGINX_OTEL_ENDPOINT: otel-collector:4317 }
-        run: bash scripts/ci/compose-start-stack.sh
-      - name: Vanilla wait for readiness
-        env: { CI_PROJECT: ci-otel }
-        run: bash scripts/ci/compose-wait-web.sh
-      - name: Vanilla assert OTEL spans
-        env: { CI_PROJECT: ci-otel }
-        run: bash scripts/ci/compose-otel-spans.sh
-      - name: Vanilla assert OTEL gate-off
-        env: { CI_PROJECT: ci-otel, HTTP_PORT: '18085', OTEL_EXPORTER_OTLP_ENDPOINT: '', NGINX_OTEL_ENDPOINT: '' }
-        run: bash scripts/ci/compose-gate-off.sh
-      - name: Vanilla diagnostics on failure
-        if: failure()
-        env: { CI_PROJECT: ci-otel }
-        run: bash scripts/ci/compose-diag.sh
-      - name: Vanilla teardown
-        if: always()
-        env: { CI_PROJECT: ci-otel }
-        run: bash scripts/ci/compose-teardown.sh
-
-      - name: Granian cleanup
-        env: { CI_PROJECT: ci-granian, EXTRA_FILES: resources/compose.granian-ci.yml }
-        run: bash scripts/ci/compose-cleanup.sh
-      - name: Granian start dependencies
-        env: { CI_PROJECT: ci-granian, EXTRA_FILES: resources/compose.granian-ci.yml, HTTP_PORT: '18086' }
-        run: bash scripts/ci/compose-start-deps.sh
-      - name: Granian run init
-        env: { CI_PROJECT: ci-granian, EXTRA_FILES: resources/compose.granian-ci.yml, HTTP_PORT: '18086', OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318 }
-        run: bash scripts/ci/compose-init.sh
-      - name: Granian start application stack
-        env: { CI_PROJECT: ci-granian, EXTRA_FILES: resources/compose.granian-ci.yml, HTTP_PORT: '18086', OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318, NGINX_OTEL_ENDPOINT: otel-collector:4317 }
-        run: bash scripts/ci/compose-start-stack.sh
-      - name: Granian wait for readiness
-        env: { CI_PROJECT: ci-granian, EXTRA_FILES: resources/compose.granian-ci.yml, CI_WAIT_ROUNDS: '120' }
-        run: bash scripts/ci/compose-wait-web.sh
-      - name: Granian assert serving process
-        env: { CI_PROJECT: ci-granian, EXTRA_FILES: resources/compose.granian-ci.yml }
-        run: bash scripts/ci/granian-verify-serving.sh
-      - name: Granian assert pong API
-        env: { CI_PROJECT: ci-granian, EXTRA_FILES: resources/compose.granian-ci.yml }
-        run: bash scripts/ci/granian-pong.sh
-      - name: Granian assert OTEL spans
-        env: { CI_PROJECT: ci-granian, EXTRA_FILES: resources/compose.granian-ci.yml }
-        run: bash scripts/ci/compose-otel-spans.sh
-      - name: Granian assert CRUD
-        env: { CI_PROJECT: ci-granian, EXTRA_FILES: resources/compose.granian-ci.yml }
-        run: bash scripts/ci/granian-crud.sh
-      - name: Granian diagnostics on failure
-        if: failure()
-        env: { CI_PROJECT: ci-granian, EXTRA_FILES: resources/compose.granian-ci.yml }
-        run: bash scripts/ci/compose-diag.sh
-      - name: Granian teardown
-        if: always()
-        env: { CI_PROJECT: ci-granian, EXTRA_FILES: resources/compose.granian-ci.yml }
-        run: bash scripts/ci/compose-teardown.sh
-
-  # STAGE 4: publish only after every build and integration test passes.
+  # STAGE 3: publish only after every matrix entry passes, then verify digests.
   publish:
-    name: 'Stage 4 - Publish latest tags and verify digests'
-    needs: integration
+    name: 'Publish latest/base/latest-granian and verify digests'
+    needs: variant-matrix
     if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true)
     runs-on: ubuntu-latest
     timeout-minutes: 30

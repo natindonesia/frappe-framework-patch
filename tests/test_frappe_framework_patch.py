@@ -22,6 +22,7 @@ or use the convenience wrapper tests/run_tests.sh.
 """
 
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SUBMODULE = REPO_ROOT / "frappe"
 PATCHES_DIR = REPO_ROOT / "patches"
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build-images.yml"
 
 # Files the patch set is expected to produce/touch (relative to the submodule root).
 PATCHED_FILES = [
@@ -169,6 +171,62 @@ class OTelPropagationTests(unittest.TestCase):
         self._tc.detach_trace_context(token)
 
         span.end()
+
+
+class WorkflowStructureTests(unittest.TestCase):
+    """Static assertions that the consolidated CI matrix is correctly wired:
+    exactly three variants, all consuming the exact tested-image archive, and
+    publish gated behind the matrix. No Docker/network required."""
+
+    def setUp(self):
+        self.assertTrue(WORKFLOW.exists(), f"workflow missing: {WORKFLOW}")
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML not installed")
+        self.workflow = yaml.safe_load(WORKFLOW.read_text())
+
+    def test_matrix_has_exactly_three_variants(self):
+        m = self.workflow["jobs"]["variant-matrix"]["strategy"]["matrix"]["variant"]
+        self.assertEqual(sorted(m), ["base", "latest", "latest-granian"])
+
+    def test_matrix_downloads_and_loads_tested_images(self):
+        job = self.workflow["jobs"]["variant-matrix"]
+        steps = "\n".join(
+            f'{s.get("name","")} :: {s.get("uses","")} :: {s.get("run","")} :: {s.get("with",{})}'
+            for s in job["steps"]
+        )
+        self.assertIn("tested-vanilla-and-granian-images", steps, "matrix must download the tested-images archive")
+        self.assertIn("gunzip", steps, "matrix must load the exported archive")
+        self.assertIn("matrix-variant-test.sh", steps, "matrix must invoke the variant-aware test")
+        # Matrix must never rebuild; it must consume the artifact.
+        for s in job["steps"]:
+            run = s.get("run", "")
+            self.assertNotIn("vanilla-build.sh", run)
+            self.assertNotIn("base-build.sh", run)
+            self.assertNotIn("granian-build.sh", run)
+
+    def test_matrix_needs_images_job(self):
+        self.assertEqual(
+            self.workflow["jobs"]["variant-matrix"]["needs"], "images",
+            "variant-matrix must build only after the images job produced the archive",
+        )
+
+    def test_publish_depends_on_matrix(self):
+        self.assertIn(
+            "variant-matrix", self.workflow["jobs"]["publish"]["needs"],
+            "publish must be gated behind variant-matrix",
+        )
+
+    def test_images_job_builds_all_three_and_granian_from_latest(self):
+        job = self.workflow["jobs"]["images"]
+        steps = "\n".join(s.get("run", "") for s in job["steps"])
+        for script in ("vanilla-build.sh", "base-build.sh", "granian-build.sh", "granian-verify.sh"):
+            self.assertIn(script, steps, f"images job must run {script}")
+        self.assertIn("tested-images.tar.gz", steps, "images job must export exact tested images")
+        # granian-build.sh preserves the explicit FROM base=frappe:latest contract.
+        gb = Path(REPO_ROOT) / "scripts" / "ci" / "granian-build.sh"
+        self.assertIn("BASE_IMAGE=frappe:latest", gb.read_text())
 
 
 if __name__ == "__main__":

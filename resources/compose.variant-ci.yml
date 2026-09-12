@@ -1,0 +1,25 @@
+# CI-only overlay that pins every app/nginx service to the single local image
+# under test. Appended LAST by the matrix runner so `image:` here wins over the
+# gunicorn/granian defaults in compose.ci.yml / compose.granian-ci.yml.
+#
+# The image is selected with FRAPPE_TEST_IMAGE and must already be loaded into
+# the local daemon (from the tested-images artifact) before the stack boots.
+# This lets the SAME common compose/OTEL/CRUD contract run against any variant
+# (base, latest, latest-granian) without rebuilding or excluding any of them.
+services:
+  init:
+    image: ${FRAPPE_TEST_IMAGE}
+  web:
+    image: ${FRAPPE_TEST_IMAGE}
+  worker:
+    image: ${FRAPPE_TEST_IMAGE}
+  worker-long:
+    image: ${FRAPPE_TEST_IMAGE}
+  worker-short:
+    image: ${FRAPPE_TEST_IMAGE}
+  schedule:
+    image: ${FRAPPE_TEST_IMAGE}
+  socketio:
+    image: ${FRAPPE_TEST_IMAGE}
+  nginx:
+    image: ${FRAPPE_TEST_IMAGE}
