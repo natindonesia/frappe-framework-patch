@@ -35,9 +35,11 @@ done
 # The collector's batch timeout is 5s. The stabilization loop above can exit as
 # soon as max_start looks stable, but a final 5s batch flush may still land right
 # after it breaks. Always wait at least 6s so the whole OTEL-ON batch is
-# guaranteed flushed to the collector log before we sample the gate-off reference.
+# guaranteed flushed to the collector log, THEN re-sample the reference fresh so
+# any spans flushed during that wait (Start time just after the loop's snapshot)
+# are still captured in the reference instead of falsely flagged as leaks.
 sleep 6
-before_ref="$prev"
+before_ref="$(max_start)"
 
 compose up -d
 sleep 10
