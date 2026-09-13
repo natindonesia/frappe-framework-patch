@@ -141,6 +141,8 @@ echo "$body" | grep -q '"message":"pong"' || { echo "::error::[$VARIANT] expecte
 
 run_step compose-otel-spans
 run_step granian-crud
+# File upload + access contract (403 guest / 200 auth, private+public GET).
+run_step file-upload-access
 # gate-off only applies to the gunicorn-served variants (latest, base): restart
 # with OTLP endpoints EMPTY and assert no spans leak.
 if [ "$VARIANT" != "latest-granian" ]; then
