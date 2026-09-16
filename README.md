@@ -16,6 +16,13 @@ The test suite applies patches to a disposable archive of the pinned submodule, 
 the patched Python files compile, and leaves `frappe/` clean. OTel functional tests can
 be run with `bash tests/run_tests.sh` when package installation is available.
 
+## OpenTelemetry deployment
+
+OpenTelemetry is optional and can export Frappe, worker, scheduler, and nginx traces
+through the local OTel Collector to either local logs or a central OTLP backend. See
+[OpenTelemetry deployment](docs/otel-deployment.md) for configuration, rollout,
+verification, and troubleshooting instructions.
+
 ## Local image build
 
 ```bash
