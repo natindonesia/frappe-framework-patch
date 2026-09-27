@@ -11,3 +11,5 @@ REGISTRY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}"
 echo "Publishing tested vanilla -> ${REGISTRY}/frappe:latest"
 docker tag frappe:latest "${REGISTRY}/frappe:latest"
 docker push "${REGISTRY}/frappe:latest"
+# Optional second registry (GitHub Container Registry) — same tested image.
+publish_secondary frappe:latest frappe:latest

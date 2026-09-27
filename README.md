@@ -43,7 +43,8 @@ context vendors the required `resources/`, `docker-compose.yml`,
   the unpatched `base`, and the Granian images, then on an approved main push
   publishes exactly `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest`,
   `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:base`, and
-  `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest-granian`.
+  `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest-granian` — and the same three
+  tags to the GitHub Container Registry (`ghcr.io/<owner>/frappe:*`).
 - `update-upstream.yml` is manual (`workflow_dispatch`). It advances `frappe/` to the
   latest `origin/version-16`, validates the patch set, and pushes only the parent
   repository's gitlink commit when validation succeeds.
@@ -54,13 +55,29 @@ Registry configuration (same as the parent workflow): set the variables
 (or the `DIGITALOCEAN_EMAIL`/`DIGITALOCEAN_ACCESS_TOKEN` fallbacks). Secrets are
 used only by the registry login action and are never printed.
 
-Images are published only as:
+The second registry is the GitHub Container Registry and needs no secret — the
+workflow logs in with its own `GITHUB_TOKEN` and `permissions: packages: write`.
+Override the variables `SECONDARY_REGISTRY_URL` (default `ghcr.io`) and
+`SECONDARY_REGISTRY_NAMESPACE` (default the repository owner, lowercased by the
+publish scripts). Publishing to it is skipped only when `SECONDARY_REGISTRY_URL`
+is set to an empty value.
+
+Images are published to both registries only as:
 
 ```text
 ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest
 ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:base
 ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest-granian
+
+ghcr.io/<owner>/frappe:latest
+ghcr.io/<owner>/frappe:base
+ghcr.io/<owner>/frappe:latest-granian
 ```
+
+Publication is `docker tag` + `docker push` of the images that already passed the
+matrix, so both registries hold the identical digests; the final verification step
+asserts the three tags resolve to three distinct digests in each registry and to
+the same digest across registries.
 
 The image relationships are:
 
