@@ -49,6 +49,25 @@ context vendors the required `resources/`, `docker-compose.yml`,
   latest `origin/version-16`, validates the patch set, and pushes only the parent
   repository's gitlink commit when validation succeeds.
 
+## Security scanning
+
+`build-images.yml` gates publish on three independent security jobs (all upload SARIF
+to the GitHub Security tab when GHAS is enabled; upload failure never masks a scan):
+
+- `sast` — Semgrep with the `p/owasp-top-ten` (OWASP Top 10) and `p/cwe-top-25`
+  (CWE Top 25) packs over the owned `scripts/ resources/ runtime/ tests/ patches/`
+  surface. Fails on `ERROR`-severity findings.
+- `trivy-source` — Trivy filesystem + config scan (dependency CVEs, committed
+  secrets, Dockerfile/compose/YAML hardening) over the checked-out tree.
+- `trivy-images` — Trivy scan of the exact tested `frappe:latest`, `frappe:base`,
+  and `frappe-granian:latest` images (vuln + secret + misconfig) after load, before
+  any publish. Fails on `CRITICAL,HIGH`.
+
+All jobs can run locally via `bash scripts/ci/security-scan-{sast,source,images}.sh`
+(the image script requires the images be loaded locally). Tune versions and gates with
+`TRIVY_VERSION`, `SEMGREP_VERSION`, `SECURITY_SEVERITY`, `SEMGREP_SEVERITY`, and
+`SECURITY_FAIL_ON_FINDINGS`; `SEMGREP_EXTRA_CONFIGS` appends more rule packs.
+
 Registry configuration (same as the parent workflow): set the variables
 `REGISTRY_URL` (default `registry.digitalocean.com`) and `REGISTRY_NAMESPACE`
 (default `natindonesia`), and the secrets `REGISTRY_USERNAME`/`REGISTRY_PASSWORD`

@@ -1,8 +1,10 @@
 # Consolidated Docker + Granian pipeline. The three published variants
 # (base / latest / latest-granian) are built+pre-validated in ONE job and
 # transferred as an exact Docker archive; then a single common test contract
-# runs against ALL THREE via a matrix; publish happens only after every matrix
-# entry passes. No downstream rebuild, no temporary registry tags.
+# runs against ALL THREE via a matrix; security scanning (Semgrep OWASP Top 10
+# + CWE Top 25 SAST, Trivy source/config, and Trivy image scans) runs in
+# parallel; publish happens only after every matrix entry AND every security
+# job passes. No downstream rebuild, no temporary registry tags.
 # Publish promotes those exact tested images to BOTH the primary registry
 # (registry.digitalocean.com) and the GitHub Container Registry (ghcr.io).
 name: Build & Test Docker and Granian Images
@@ -21,6 +23,14 @@ on:
 
 env:
   DOCKER_BUILDKIT: 1
+  # Pinned security-scanner versions (upgrades are explicit). Leave
+  # SEMGREP_VERSION empty to track the latest Semgrep release/rules.
+  TRIVY_VERSION: 0.74.0
+  SEMGREP_VERSION: ''
+  # Fail the security jobs on HIGH/CRITICAL findings for Trivy and ERROR-level
+  # Semgrep findings. Set SECURITY_FAIL_ON_FINDINGS=false (Trivy) to report only.
+  SECURITY_SEVERITY: CRITICAL,HIGH
+  SEMGREP_SEVERITY: ERROR
   REGISTRY_URL: ${{ vars.REGISTRY_URL || 'registry.digitalocean.com' }}
   REGISTRY_NAMESPACE: ${{ vars.REGISTRY_NAMESPACE || 'natindonesia' }}
   # Optional SECOND registry (GitHub Container Registry by default). Set the
@@ -101,12 +111,116 @@ jobs:
       - name: Run common contract for ${{ matrix.variant }}
         run: bash scripts/ci/matrix-variant-test.sh "${{ matrix.variant }}"
 
-  # STAGE 3: publish only after every matrix entry passes, then verify digests.
+  # STAGE 2b: static application security testing. Semgrep is run against the
+  # owned patch/script surface (not the checked-out Frappe submodule) using the
+  # OWASP Top 10 and CWE Top 25 rule packs. Runs independent of the image build.
+  sast:
+    name: 'SAST - Semgrep OWASP Top 10 + CWE Top 25'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Run Semgrep SAST
+        run: bash scripts/ci/security-scan-sast.sh
+      - name: Upload Semgrep SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: security-results/semgrep.sarif
+          category: semgrep
+
+  # STAGE 2c: dependency/secret/IaC scan of the checked-out source tree with
+  # Trivy (no image required). Also independent of the image build.
+  trivy-source:
+    name: 'Security - Trivy source (deps, secrets, IaC)'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Run Trivy filesystem + config scan
+        run: bash scripts/ci/security-scan-source.sh
+      - name: Upload Trivy filesystem SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: security-results/trivy-fs.sarif
+          category: trivy-source-fs
+      - name: Upload Trivy config SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: security-results/trivy-config.sarif
+          category: trivy-source-config
+
+  # STAGE 2d: container image scan of the EXACT tested images (vuln, secrets,
+  # insecure config) before any publish. Consumes the same archive as the
+  # variant matrix; never rebuilds.
+  trivy-images:
+    name: 'Security - Trivy images (vuln, secret, misconfig)'
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Download tested images
+        uses: actions/download-artifact@v4
+        with:
+          name: tested-vanilla-and-granian-images
+          path: /tmp
+      - name: Load tested images
+        run: gunzip -c /tmp/tested-images.tar.gz | docker load
+      - name: Run Trivy image scan
+        run: bash scripts/ci/security-scan-images.sh frappe:latest frappe:base frappe-granian:latest
+      - name: Upload Trivy image SARIF (latest)
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: security-results/trivy-image-frappe_latest.sarif
+          category: trivy-image-latest
+      - name: Upload Trivy image SARIF (base)
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: security-results/trivy-image-frappe_base.sarif
+          category: trivy-image-base
+      - name: Upload Trivy image SARIF (granian)
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: security-results/trivy-image-frappe-granian_latest.sarif
+          category: trivy-image-granian
+
+  # STAGE 3: publish only after every matrix entry AND every security scan passes,
+  # then verify digests.
   # The tested images are promoted byte-for-byte to BOTH registries: the primary
   # registry (DigitalOcean) and the GitHub Container Registry (ghcr.io).
   publish:
     name: 'Publish latest/base/latest-granian and verify digests'
-    needs: variant-matrix
+    needs: [variant-matrix, sast, trivy-source, trivy-images]
     if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true)
     runs-on: ubuntu-latest
     timeout-minutes: 30
