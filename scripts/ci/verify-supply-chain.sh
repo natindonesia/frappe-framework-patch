@@ -31,14 +31,20 @@ verify_variant() {
     --certificate-oidc-issuer "$ISSUER" \
     --certificate-identity-regexp "$IDENTITY_REGEXP" \
     "$ref"
+  # verify-attestation prints the FULL attestation payload to stdout. The SPDX
+  # SBOM for this image is ~18 MB on ONE line; streaming that through the
+  # GitHub Actions log can stall the runner indefinitely. Verification
+  # diagnostics/errors go to stderr and the exit code is authoritative, so
+  # discard stdout.
   cosign verify-attestation --type "$SLSA_PREDICATE_TYPE" \
     --certificate-oidc-issuer "$ISSUER" \
     --certificate-identity-regexp "$IDENTITY_REGEXP" \
-    "$ref"
+    "$ref" >/dev/null
   cosign verify-attestation --type "$SPDX_PREDICATE_TYPE" \
     --certificate-oidc-issuer "$ISSUER" \
     --certificate-identity-regexp "$IDENTITY_REGEXP" \
-    "$ref"
+    "$ref" >/dev/null
+  echo "   OK ${variant}: signature + SLSA provenance + SPDX SBOM verified"
 }
 
 for variant in base latest latest-granian; do
