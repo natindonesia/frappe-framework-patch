@@ -45,7 +45,21 @@ compose up -d
 sleep 10
 compose exec -T nginx curl -s -o /dev/null -H "Host: crm.localhost" http://127.0.0.1:8080/api/method/ping
 compose exec -T nginx curl -s -o /dev/null -H "Host: crm.localhost" http://127.0.0.1:8080/api/method/ping
-compose logs nginx | grep -q 'OpenTelemetry disabled' || { echo "gate-off log missing"; exit 1; }
+# Poll for the gate-off log line. Capture the logs FIRST, then grep the string:
+# a bare `compose logs nginx | grep -q ...` can fail under `set -o pipefail`
+# when grep exits on its match and docker compose logs is then killed by
+# SIGPIPE (exit 141), which fails the pipeline even though the line is present.
+# Polling also absorbs the small lag before the recreated container's logs are
+# visible through the daemon.
+gate_off_seen=""
+for _ in $(seq 1 15); do
+  if grep -q 'OpenTelemetry disabled' <<<"$(compose logs nginx 2>&1 || true)"; then
+    gate_off_seen=1
+    break
+  fi
+  sleep 2
+done
+[ -n "$gate_off_seen" ] || { echo "gate-off log missing"; exit 1; }
 
 # After gate-off, no span may carry a Start time newer than the reference.
 leaked=$(compose logs otel-collector | awk -v ref="$before_ref" '
