@@ -8,9 +8,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # patch set (APPLY_PATCHES=true) and shares the dependency/bench stages with
 # the `frappe-base` (unpatched) target built by base-build.sh. Distinct gha
 # cache scope so an unpatched base layer can never be mistaken for latest.
+set_image_metadata_args
 docker buildx build \
   --target frappe \
   --build-arg APPLY_PATCHES=true \
+  "${IMAGE_METADATA_ARGS[@]}" \
   --load \
   --cache-from type=gha,scope=frappe-latest \
   --cache-to type=gha,mode=max,scope=frappe-latest \

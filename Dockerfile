@@ -264,7 +264,20 @@ COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench/sites/assets
 # Target frappe-base : variant=base (unpatched reference image).
 # =============================================================================
 FROM deploy AS frappe-base
-LABEL org.opencontainers.image.variant=base \
+ARG IMAGE_VERSION
+ARG IMAGE_REVISION
+ARG IMAGE_SOURCE=https://github.com/natindonesia/frappe-framework-patch
+ARG IMAGE_CREATED
+ARG FRAPPE_SHA
+LABEL org.opencontainers.image.title="Frappe Framework backend (unpatched base)" \
+      org.opencontainers.image.description="Unpatched reference build of Frappe/ERPNext (pinned submodule, no local patches applied)." \
+      org.opencontainers.image.url="https://github.com/natindonesia/frappe-framework-patch" \
+      org.opencontainers.image.source="${IMAGE_SOURCE}" \
+      org.opencontainers.image.revision="${IMAGE_REVISION}" \
+      org.opencontainers.image.created="${IMAGE_CREATED}" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.frappe-sha="${FRAPPE_SHA}" \
+      org.opencontainers.image.variant=base \
       org.opencontainers.image.patches-applied=false
 VOLUME [ \
   "/home/frappe/frappe-bench/sites", \
@@ -277,7 +290,20 @@ COPY --chmod=0755 resources/fix-db-users.sh /scripts/fix-db-users.sh
 # Target frappe (DEFAULT) : variant=latest (patched, production image).
 # =============================================================================
 FROM deploy AS frappe
-LABEL org.opencontainers.image.variant=latest \
+ARG IMAGE_VERSION
+ARG IMAGE_REVISION
+ARG IMAGE_SOURCE=https://github.com/natindonesia/frappe-framework-patch
+ARG IMAGE_CREATED
+ARG FRAPPE_SHA
+LABEL org.opencontainers.image.title="Frappe Framework backend (patched)" \
+      org.opencontainers.image.description="Patched production build of Frappe/ERPNext (pinned submodule plus local patch set)." \
+      org.opencontainers.image.url="https://github.com/natindonesia/frappe-framework-patch" \
+      org.opencontainers.image.source="${IMAGE_SOURCE}" \
+      org.opencontainers.image.revision="${IMAGE_REVISION}" \
+      org.opencontainers.image.created="${IMAGE_CREATED}" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.frappe-sha="${FRAPPE_SHA}" \
+      org.opencontainers.image.variant=latest \
       org.opencontainers.image.patches-applied=true
 WORKDIR /home/frappe/frappe-bench
 RUN echo "echo \"Commands restricted in production container, Read FAQ before you proceed: https://frappe.io/ctr-faq\"" >> ~/.bashrc

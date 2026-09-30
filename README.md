@@ -121,6 +121,53 @@ Thus, the effective inheritance is `latest -> latest-granian`; `base` is the unp
 sibling/reference image, not the parent of `latest`. No SHA, commit, run, variant, or
 temporary registry tags are published.
 
+## Verifying published images
+
+Images are published to both the DigitalOcean registry and the GitHub Container
+Registry (`ghcr.io`). Supply-chain attestations (SLSA build provenance and an SPDX
+SBOM) and a keyless cosign signature are attached in GHCR only.
+
+Every image is labeled with these OCI labels:
+
+- `org.opencontainers.image.title`, `.description`, `.url`, `.source`, `.revision`,
+  `.created`, and `.version`.
+- `.variant` — `base`, `latest`, or `latest-granian`.
+- `.patches-applied` — `false` or `true`.
+- `.frappe-sha` — the pinned Frappe submodule commit.
+
+A consumer verifies signature, provenance, and SBOM against a digest:
+
+```bash
+IMAGE=ghcr.io/natindonesia/frappe
+DIGEST=sha256:<digest>
+
+# image signature
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/natindonesia/frappe-framework-patch/\.github/workflows/build-images\.yml@' \
+  "${IMAGE}@${DIGEST}"
+
+# SLSA build provenance attestation
+cosign verify-attestation \
+  --type https://slsa.dev/provenance/v1 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/natindonesia/frappe-framework-patch/\.github/workflows/build-images\.yml@' \
+  "${IMAGE}@${DIGEST}"
+
+# SPDX SBOM attestation
+cosign verify-attestation \
+  --type https://spdx.dev/Document/v2.3 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/natindonesia/frappe-framework-patch/\.github/workflows/build-images\.yml@' \
+  "${IMAGE}@${DIGEST}"
+```
+
+The GitHub CLI equivalent is:
+
+```bash
+gh attestation verify oci://${IMAGE}@${DIGEST} --owner natindonesia
+```
+
 ## Patch scope
 
 The current patch propagates W3C `traceparent` context from `frappe.enqueue()` into the

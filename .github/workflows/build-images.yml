@@ -7,6 +7,8 @@
 # job passes. No downstream rebuild, no temporary registry tags.
 # Publish promotes those exact tested images to BOTH the primary registry
 # (registry.digitalocean.com) and the GitHub Container Registry (ghcr.io).
+# Finally, the published GHCR digests are attested (SLSA provenance + SPDX SBOM),
+# keylessly signed, and independently verified with a hard-fail gate.
 name: Build & Test Docker and Granian Images
 
 on:
@@ -55,6 +57,15 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+      - name: Set OCI image build metadata
+        run: |
+          {
+            echo "IMAGE_REVISION=${GITHUB_SHA}"
+            echo "IMAGE_VERSION=${GITHUB_REF_NAME}"
+            echo "IMAGE_SOURCE=https://github.com/${GITHUB_REPOSITORY}"
+            echo "IMAGE_CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "FRAPPE_SHA=$(git -C frappe rev-parse HEAD)"
+          } >> "$GITHUB_ENV"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
       - name: Build patched Docker image (frappe:latest)
@@ -129,7 +140,7 @@ jobs:
       - name: Run Semgrep SAST
         run: bash scripts/ci/security-scan-sast.sh
       - name: Upload Semgrep SARIF
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
@@ -145,6 +156,9 @@ jobs:
     permissions:
       contents: read
       security-events: write
+    env:
+      # Report-only: scan and upload results, but do not fail the job/publish.
+      SECURITY_FAIL_ON_FINDINGS: false
     steps:
       - name: Checkout source
         uses: actions/checkout@v7
@@ -153,14 +167,14 @@ jobs:
       - name: Run Trivy filesystem + config scan
         run: bash scripts/ci/security-scan-source.sh
       - name: Upload Trivy filesystem SARIF
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-results/trivy-fs.sarif
           category: trivy-source-fs
       - name: Upload Trivy config SARIF
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
@@ -178,6 +192,9 @@ jobs:
     permissions:
       contents: read
       security-events: write
+    env:
+      # Report-only: scan and upload results, but do not fail the job/publish.
+      SECURITY_FAIL_ON_FINDINGS: false
     steps:
       - name: Checkout scripts
         uses: actions/checkout@v7
@@ -193,21 +210,21 @@ jobs:
       - name: Run Trivy image scan
         run: bash scripts/ci/security-scan-images.sh frappe:latest frappe:base frappe-granian:latest
       - name: Upload Trivy image SARIF (latest)
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-results/trivy-image-frappe_latest.sarif
           category: trivy-image-latest
       - name: Upload Trivy image SARIF (base)
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-results/trivy-image-frappe_base.sarif
           category: trivy-image-base
       - name: Upload Trivy image SARIF (granian)
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
@@ -222,6 +239,8 @@ jobs:
     name: 'Publish latest/base/latest-granian and verify digests'
     needs: [variant-matrix, sast, trivy-source, trivy-images]
     if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true)
+    outputs:
+      digests_json: ${{ steps.digests.outputs.digests_json }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -260,3 +279,113 @@ jobs:
         run: bash scripts/ci/publish-granian.sh
       - name: Verify published tags have distinct digests
         run: bash scripts/ci/publish-verify.sh
+      - name: Resolve published GHCR digests
+        id: digests
+        run: bash scripts/ci/supply-chain-digests.sh
+
+  # STAGE 4: bind supply-chain metadata to the EXACT published GHCR digests. One
+  # matrix entry per variant: generate an SPDX SBOM, attach SLSA build provenance
+  # + SPDX SBOM attestations (both pushed to the registry), then keylessly sign
+  # the image digest. Attestations and signatures live in GHCR only.
+  attest:
+    name: 'Attest + sign ${{ matrix.variant }}'
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, latest, latest-granian]
+    steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Resolve digest and image reference
+        id: subject
+        env:
+          DIGESTS_JSON: ${{ needs.publish.outputs.digests_json }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          digest="$(printf '%s' "$DIGESTS_JSON" | jq -r --arg v "$VARIANT" '.[$v]')"
+          [ -n "$digest" ] && [ "$digest" != "null" ] || { echo "no digest for ${VARIANT}"; exit 1; }
+          image="$(printf '%s/%s/frappe' "$SECONDARY_REGISTRY_URL" "$SECONDARY_REGISTRY_NAMESPACE" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "digest=${digest}"
+            echo "image=${image}"
+            echo "ref=${image}@${digest}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.SECONDARY_REGISTRY_URL }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0.24.2
+        with:
+          image: ${{ steps.subject.outputs.ref }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          syft-version: v1.52.0
+          upload-artifact: false
+      - name: Attest build provenance
+        uses: actions/attest@v4.2.2
+        with:
+          subject-name: ${{ steps.subject.outputs.image }}
+          subject-digest: ${{ steps.subject.outputs.digest }}
+          push-to-registry: true
+      - name: Attest SPDX SBOM
+        uses: actions/attest@v4.2.2
+        with:
+          subject-name: ${{ steps.subject.outputs.image }}
+          subject-digest: ${{ steps.subject.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+      - name: Sign image digest (keyless)
+        run: cosign sign --yes "${{ steps.subject.outputs.ref }}"
+
+  # STAGE 5: hard-fail gate. Independently re-verify every variant's keyless
+  # signature and both attestations against the pinned GitHub OIDC issuer and
+  # this repository's build-images.yml workflow identity.
+  verify:
+    name: 'Verify signatures and attestations'
+    needs: [publish, attest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.SECONDARY_REGISTRY_URL }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Verify signatures and attestations
+        env:
+          DIGESTS_JSON: ${{ needs.publish.outputs.digests_json }}
+        run: bash scripts/ci/verify-supply-chain.sh

@@ -26,6 +26,22 @@
 ARG BASE_IMAGE=frappe:latest
 FROM ${BASE_IMAGE} AS granian
 
+ARG IMAGE_VERSION
+ARG IMAGE_REVISION
+ARG IMAGE_SOURCE=https://github.com/natindonesia/frappe-framework-patch
+ARG IMAGE_CREATED
+ARG FRAPPE_SHA
+LABEL org.opencontainers.image.title="Frappe Framework backend (Granian runtime)" \
+      org.opencontainers.image.description="Patched Frappe/ERPNext served by the Granian WSGI/ASGI server instead of gunicorn." \
+      org.opencontainers.image.url="https://github.com/natindonesia/frappe-framework-patch" \
+      org.opencontainers.image.source="${IMAGE_SOURCE}" \
+      org.opencontainers.image.revision="${IMAGE_REVISION}" \
+      org.opencontainers.image.created="${IMAGE_CREATED}" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.frappe-sha="${FRAPPE_SHA}" \
+      org.opencontainers.image.variant=latest-granian \
+      org.opencontainers.image.patches-applied=true
+
 USER frappe
 
 # Install Granian into the bench venv that bench init created.

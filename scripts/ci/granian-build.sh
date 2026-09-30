@@ -10,8 +10,10 @@ set -euo pipefail
 # shellcheck source=scripts/ci/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
+set_image_metadata_args
 docker build \
   --build-arg BASE_IMAGE=frappe:latest \
+  "${IMAGE_METADATA_ARGS[@]}" \
   -t frappe-granian:latest \
   -f Dockerfile.granian \
   .

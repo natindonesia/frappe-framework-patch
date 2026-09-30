@@ -7,9 +7,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # It is a real, distinct artifact: the same shared dependency/bench stages as
 # frappe:latest, but APPLY_PATCHES=false so ./patches are never applied and the
 # `base` target label is baked in. NOT the patched production image.
+set_image_metadata_args
 docker buildx build \
   --target frappe-base \
   --build-arg APPLY_PATCHES=false \
+  "${IMAGE_METADATA_ARGS[@]}" \
   --load \
   --cache-from type=gha,scope=frappe-base \
   --cache-to type=gha,mode=max,scope=frappe-base \

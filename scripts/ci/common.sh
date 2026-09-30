@@ -6,6 +6,10 @@
 #   * `compose()` runs `docker compose` against the repository's standard CI
 #     stack (project + docker-compose.yml + resources/compose.ci.yml, plus any
 #     extra override files).
+#   * `secondary_registry()` / `publish_secondary()` mirror a tested image to the
+#     optional second registry (ghcr.io).
+#   * `set_image_metadata_args()` fills IMAGE_METADATA_ARGS with the
+#     `--build-arg` flags for the org.opencontainers.image LABEL metadata.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -28,6 +32,26 @@ compose() {
 # lower() -- lowercase a string. Registry image names (GHCR included) MUST be
 # lowercase, while GitHub expressions have no lowercase function.
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# set_image_metadata_args() -- populate the global IMAGE_METADATA_ARGS array
+# with `--build-arg` flags for the org.opencontainers.image metadata baked into
+# the image LABELs. Values come from the environment (the workflow metadata
+# step), falling back to the local checkout so plain local builds still carry a
+# sensible revision/version.
+set_image_metadata_args() {
+  local revision="${IMAGE_REVISION:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
+  local version="${IMAGE_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+  local source="${IMAGE_SOURCE:-https://github.com/natindonesia/frappe-framework-patch}"
+  local created="${IMAGE_CREATED:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  local frappe_sha="${FRAPPE_SHA:-$(git -C frappe rev-parse HEAD 2>/dev/null || echo unknown)}"
+  IMAGE_METADATA_ARGS=(
+    --build-arg "IMAGE_VERSION=${version}"
+    --build-arg "IMAGE_REVISION=${revision}"
+    --build-arg "IMAGE_SOURCE=${source}"
+    --build-arg "IMAGE_CREATED=${created}"
+    --build-arg "FRAPPE_SHA=${frappe_sha}"
+  )
+}
 
 # secondary_registry() -- print "<registry>/<namespace>" for the OPTIONAL second
 # registry (e.g. ghcr.io alongside registry.digitalocean.com), or nothing when
