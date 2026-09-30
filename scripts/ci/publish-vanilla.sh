@@ -10,6 +10,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 REGISTRY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}"
 echo "Publishing tested vanilla -> ${REGISTRY}/frappe:latest"
 docker tag frappe:latest "${REGISTRY}/frappe:latest"
-docker push "${REGISTRY}/frappe:latest"
+push_with_retry "${REGISTRY}/frappe:latest"
 # Optional second registry (GitHub Container Registry) — same tested image.
 publish_secondary frappe:latest frappe:latest

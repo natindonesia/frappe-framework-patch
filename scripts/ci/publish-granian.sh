@@ -10,6 +10,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 REGISTRY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}"
 echo "Publishing tested granian -> ${REGISTRY}/frappe:latest-granian"
 docker tag frappe-granian:latest "${REGISTRY}/frappe:latest-granian"
-docker push "${REGISTRY}/frappe:latest-granian"
+push_with_retry "${REGISTRY}/frappe:latest-granian"
 # Optional second registry (GitHub Container Registry) — same tested image.
 publish_secondary frappe-granian:latest frappe:latest-granian

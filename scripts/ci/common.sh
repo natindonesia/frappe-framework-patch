@@ -8,6 +8,8 @@
 #     extra override files).
 #   * `secondary_registry()` / `publish_secondary()` mirror a tested image to the
 #     optional second registry (ghcr.io).
+#   * `push_with_retry()` pushes an image with bounded retries for transient
+#     registry errors (GHCR "unknown blob").
 #   * `set_image_metadata_args()` fills IMAGE_METADATA_ARGS with the
 #     `--build-arg` flags for the org.opencontainers.image LABEL metadata.
 set -euo pipefail
@@ -32,6 +34,22 @@ compose() {
 # lower() -- lowercase a string. Registry image names (GHCR included) MUST be
 # lowercase, while GitHub expressions have no lowercase function.
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# push_with_retry <remote-ref> -- docker push with bounded retries and backoff.
+# Registries (GHCR especially) intermittently reject a completed upload with
+# "unknown blob"; a retry re-checks and re-uploads only the missing layers, so a
+# fresh attempt normally succeeds. Override attempts via PUSH_MAX_ATTEMPTS.
+push_with_retry() {
+  local ref="$1" attempt max="${PUSH_MAX_ATTEMPTS:-5}"
+  for ((attempt = 1; attempt <= max; attempt++)); do
+    if docker push "$ref"; then
+      return 0
+    fi
+    echo "docker push ${ref} failed (attempt ${attempt}/${max})" >&2
+    [ "$attempt" -lt "$max" ] || return 1
+    sleep $((attempt * 5))
+  done
+}
 
 # set_image_metadata_args() -- populate the global IMAGE_METADATA_ARGS array
 # with `--build-arg` flags for the org.opencontainers.image metadata baked into
@@ -74,5 +92,5 @@ publish_secondary() {
   fi
   echo "Publishing tested ${local_image} -> ${target}/${remote}"
   docker tag "$local_image" "${target}/${remote}"
-  docker push "${target}/${remote}"
+  push_with_retry "${target}/${remote}"
 }

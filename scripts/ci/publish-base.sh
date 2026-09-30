@@ -10,6 +10,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 REGISTRY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}"
 echo "Publishing tested base -> ${REGISTRY}/frappe:base"
 docker tag frappe:base "${REGISTRY}/frappe:base"
-docker push "${REGISTRY}/frappe:base"
+push_with_retry "${REGISTRY}/frappe:base"
 # Optional second registry (GitHub Container Registry) — same tested image.
 publish_secondary frappe:base frappe:base
