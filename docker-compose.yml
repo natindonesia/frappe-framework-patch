@@ -77,6 +77,7 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: frappe-app
+      PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS:-}
     volumes:
     - sites-data:/home/frappe/frappe-bench/sites
     restart: unless-stopped
@@ -101,6 +102,7 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: frappe-worker-default
+      PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS:-}
     volumes:
     - sites-data:/home/frappe/frappe-bench/sites
     restart: unless-stopped
@@ -121,6 +123,7 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: frappe-worker-long
+      PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS:-}
     volumes:
     - sites-data:/home/frappe/frappe-bench/sites
     restart: unless-stopped
@@ -141,6 +144,7 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: frappe-worker-short
+      PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS:-}
     volumes:
     - sites-data:/home/frappe/frappe-bench/sites
     restart: unless-stopped
@@ -161,6 +165,7 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: frappe-scheduler
+      PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS:-}
     volumes:
     - sites-data:/home/frappe/frappe-bench/sites
     restart: unless-stopped
@@ -219,6 +224,17 @@ services:
         condition: service_started
       socketio:
         condition: service_started
+    restart: unless-stopped
+
+  # Optional local continuous profiler (Grafana Pyroscope).
+  # Opt-in via `--profile pyroscope` or set PYROSCOPE_SERVER_ADDRESS:
+  #   PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040 docker compose --profile pyroscope up -d
+  pyroscope:
+    image: grafana/pyroscope:latest
+    ports:
+    - "${PYROSCOPE_PORT:-4040}:4040"
+    profiles:
+    - pyroscope
     restart: unless-stopped
 
 volumes:

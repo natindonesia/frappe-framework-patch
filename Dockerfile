@@ -236,7 +236,9 @@ RUN su - frappe -c '/home/frappe/frappe-bench/env/bin/pip install \
       opentelemetry-sdk \
       opentelemetry-api \
       opentelemetry-exporter-otlp-proto-http \
-      opentelemetry-instrumentation-wsgi'
+      opentelemetry-instrumentation-wsgi \
+      pyroscope-io \
+      pyroscope-otel'
 
 # Overlay the OTEL emitter files onto the bench tree. bench init git-clones the
 # app, so uncommitted files would otherwise never reach the image and gunicorn

@@ -158,8 +158,40 @@ If the collector image runs as a non-root user, ensure a mounted configuration i
 | `OTEL_TRACES_SAMPLER_ARG` | With ratio sampler | `0.1`–`1.0` | Sampling ratio for `traceidratio` samplers. |
 | `OTEL_FRAPPE_DB_STATEMENTS` | No | `0` in sensitive environments | Controls the `db.statement` SQL attribute. Disable it to avoid exporting SQL literals or PII. |
 | `OTEL_BSP_SCHEDULE_DELAY_MILLIS` | No | `5000` | Python batch exporter flush delay. |
+| `PYROSCOPE_SERVER_ADDRESS` | No | `http://pyroscope:4040` | Enables Pyroscope continuous profiling. Empty disables profiling. |
+| `PYROSCOPE_APPLICATION_NAME` | No | `frappe-app` | Pyroscope application identifier. Defaults to `OTEL_SERVICE_NAME` or `frappe-app`. |
+| `PYROSCOPE_SAMPLE_RATE` | No | `100` | Profile sampling frequency in Hz (default: 100). |
+| `PYROSCOPE_ENABLE_LOGGING` | No | `0` | Set `1` to enable verbose Pyroscope SDK diagnostics. |
 
 The Compose defaults include development credentials and should not be used for production. Set all database and administrator passwords explicitly through the deployment platform's secret configuration.
+
+
+## Continuous Profiling (Grafana Pyroscope)
+
+The image includes optional continuous profiling via [Grafana Pyroscope](https://grafana.com/oss/pyroscope/) (`pyroscope-io`) and trace correlation (`pyroscope-otel`).
+
+Continuous profiling samples active Python call stacks with low CPU overhead (~1-2%), shedding light on exactly which Python functions, modules, and code paths consume execution time inside `frappe-app` spans.
+
+### Trace-to-Profile Correlation
+
+When both `OTEL_EXPORTER_OTLP_ENDPOINT` and `PYROSCOPE_SERVER_ADDRESS` are configured:
+1. `frappe.otel` registers a `PyroscopeSpanProcessor` with the OpenTelemetry `TracerProvider`.
+2. Every request span gets tagged with a `pyroscope.profile.id` attribute.
+3. In Grafana, clicking on any span (e.g. a slow 403 or API call) displays the exact CPU flame graph for that request under "Profiles for this span".
+
+### Enabling Locally via Compose Profile
+
+To start a local Pyroscope container alongside the Frappe stack:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+export NGINX_OTEL_ENDPOINT=otel-collector:4317
+export PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
+
+docker compose --profile pyroscope up -d --build
+```
+
+The Pyroscope web UI is available at `http://localhost:4040`.
 
 ## Production rollout
 
