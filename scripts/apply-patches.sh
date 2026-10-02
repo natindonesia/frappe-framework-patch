@@ -20,8 +20,10 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SUBMODULE="$REPO_ROOT/frappe"
-PATCHES_DIR="$REPO_ROOT/patches"
+# Overridable so the Docker build can point at the bench's cloned app
+# (/home/frappe/frappe-bench/apps/frappe) and the context-copied patches dir.
+SUBMODULE="${SUBMODULE:-$REPO_ROOT/frappe}"
+PATCHES_DIR="${PATCHES_DIR:-$REPO_ROOT/patches}"
 
 # Files that MUST exist after applying all patches (relative to the submodule root).
 EXPECTED_FILES=(

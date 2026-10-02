@@ -4,18 +4,17 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 # Build the UNPATCHED base image straight into the LOCAL Docker daemon (--load).
-# It is a real, distinct artifact: the same shared dependency/bench stages as
-# frappe:latest, but APPLY_PATCHES=false so ./patches are never applied and the
-# `base` target label is baked in. NOT the patched production image.
+# It is a real, distinct artifact: it deploys from the shared pristine
+# builder-base stages (no patches applied, `base` label baked in), which the
+# patched frappe:latest then layers on top of. NOT the patched production image.
 #
-# SAME registry cache ref as vanilla-build.sh (shared base/builder stages);
-# the ARG-gated patch RUN keys differently inside the shared scope, so the
-# variants stay distinct without duplicating the dependency cache blobs.
+# SAME registry cache ref as vanilla-build.sh (shared base/builder-base stages);
+# vanilla-build's builder-patched keys separately inside the shared scope, so
+# the variants stay distinct without duplicating the dependency cache blobs.
 set_image_metadata_args
 CACHE_REF="$(build_cache_ref)"
 docker buildx build \
   --target frappe-base \
-  --build-arg APPLY_PATCHES=false \
   "${IMAGE_METADATA_ARGS[@]}" \
   --load \
   --cache-from "type=registry,ref=${CACHE_REF}" \

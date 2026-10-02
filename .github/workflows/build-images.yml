@@ -81,10 +81,12 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build patched Docker image (frappe:latest)
-        run: bash scripts/ci/vanilla-build.sh
+      # Build base FIRST so the shared pristine builder-base layers are pushed
+      # to the registry cache ref before the patched build consumes them.
       - name: Build unpatched base Docker image (frappe:base)
         run: bash scripts/ci/base-build.sh
+      - name: Build patched Docker image layered on shared base (frappe:latest)
+        run: bash scripts/ci/vanilla-build.sh
       - name: Pre-validate base unpatched and latest patched
         run: bash scripts/ci/base-verify.sh
       - name: Pre-validate Nginx runtime and assets (latest)

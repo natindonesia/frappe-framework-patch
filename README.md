@@ -106,14 +106,15 @@ latest     = patched production variant
 latest-granian = latest + Granian
 ```
 
-`base` and `latest` are sibling variants, not a parent-child chain. Both are built from
-the same pinned `./frappe` source and share the dependency/runtime setup, but `latest`
-applies the local patches while `base` does not:
+`base` and `latest` share one layered build: the pristine `builder-base` stages (bench init on
+the pinned `./frappe` source with all dependency/runtime setup) are built once, then `latest`
+layers the patch application on top; `base` deploys that pristine builder as-is:
 
-- `latest` — the production image: the pinned `./frappe` source with `patches/` applied
-  (Dockerfile target `frappe`, `APPLY_PATCHES=true`).
-- `base` — an unpatched reference image built from the same pinned `./frappe` source
-  without any local patches (Dockerfile target `frappe-base`, `APPLY_PATCHES=false`).
+- `latest` — the production image: `builder-base` (bench init on the pinned `./frappe` source)
+  plus a `builder-patched` layer that applies `patches/` into the bench's apps/frappe and
+  rebuilds the frappe app assets (Dockerfile target `frappe`).
+- `base` — an unpatched reference image deploying the shared pristine `builder-base` without
+  any local patches (Dockerfile target `frappe-base`).
 - `latest-granian` — Granian layered directly on the patched `latest` image built in the
   same CI build/test job (Dockerfile.granian, `BASE_IMAGE=frappe:latest`).
 

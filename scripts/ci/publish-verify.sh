@@ -29,7 +29,7 @@ verify_registry() {
   [ -n "$b" ] || { echo "  ${label} base digest empty"; exit 1; }
   [ -n "$v" ] || { echo "  ${label} latest digest empty"; exit 1; }
   [ -n "$g" ] || { echo "  ${label} granian digest empty"; exit 1; }
-  [ "$b" != "$v" ] || { echo "  ${label} base and latest resolved to the SAME digest — check APPLY_PATCHES wiring"; exit 1; }
+  [ "$b" != "$v" ] || { echo "  ${label} base and latest resolved to the SAME digest — check Dockerfile patch wiring"; exit 1; }
   [ "$v" != "$g" ] || { echo "  ${label} latest and granian resolved to the SAME digest — check BASE_IMAGE wiring"; exit 1; }
   [ "$b" != "$g" ] || { echo "  ${label} base and granian resolved to the SAME digest — unexpected"; exit 1; }
   VERIFIED_BASE="$b"; VERIFIED_LATEST="$v"; VERIFIED_GRANIAN="$g"

@@ -3,25 +3,25 @@ ARG PYTHON_VERSION=3.14.2
 ARG DEBIAN_BASE=bookworm
 
 # =============================================================================
-# Two published variants share ALL dependency/runtime/build layers and differ
-# ONLY by whether the local patch set is applied to the pinned ./frappe source
-# before `bench init`:
+# Two published variants are now genuinely LAYERED, not sibling forks:
 #
-#   APPLY_PATCHES=true  -> variant=latest (patched, production default)
-#                          built as `frappe:latest` / `<reg>/frappe:latest`
-#   APPLY_PATCHES=false -> variant=base (unpatched reference image)
-#                          built as `frappe:base` / `<reg>/frappe:base`
+#   builder-base   : bench init on the PRISTINE pinned ./frappe source.
+#                    -> frappe:base (unpatched reference image)
+#   builder-patched: FROM builder-base. Applies ./patches into the bench's
+#                    apps/frappe and rebuilds ONLY the frappe app assets.
+#                    -> frappe:latest (patched, production default)
+#   frappe-granian : FROM frappe:latest (see Dockerfile.granian)
+#
+# Because the patch set is applied AFTER bench init, the expensive
+# pip/yarn/bootstrap work runs exactly ONCE and is shared by both variants;
+# a patch or helper-script edit only invalidates the cheap patch/asset-rebuild
+# layers. Constraint: no patch may change Python dependency declarations
+# (pyproject.toml / setup.py / requirements) — deps are installed pre-patch.
 #
 # Select a variant with `--target`:
 #   docker build --target frappe      (latest / patched)  -- DEFAULT target
 #   docker build --target frappe-base (base / unpatched)
-#
-# Both final targets COPY the bench tree from the SAME named `builder` stage;
-# the builder's patch behavior is gated by the `APPLY_PATCHES` ARG, so each
-# variant is a real, distinct artifact (separate BuildKit cache keys because
-# the resolved ARG differs), not a relabel of the other.
 # =============================================================================
-ARG APPLY_PATCHES=true
 
 FROM python:${PYTHON_VERSION}-slim-${DEBIAN_BASE} AS base
 
@@ -173,20 +173,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # =============================================================================
-# Builder stage — shared by BOTH variants, split into three cache-bounded
-# sub-layers so the expensive `bench init` (pip + yarn over the whole app tree)
-# re-runs ONLY when the committed Frappe source itself changes, not when
-# patches/ or scripts/ churn. Identical to the upstream recipe except the
-# patch gate.
+# builder-base — pristine bench tree. Both variants build ON TOP of this stage.
+# Split into cache-bounded sub-layers so the expensive `bench init` (pip + yarn
+# over the whole app tree) re-runs ONLY when the committed Frappe source itself
+# changes, not when patches/ or scripts/ churn (those are applied in
+# builder-patched, layered on top of this stage).
 # =============================================================================
-FROM build AS builder
-
-# Must re-declare APPLY_PATCHES INSIDE this stage. A global ARG declared before
-# the first FROM is NOT in scope for RUN instructions in a later stage; without
-# this re-declaration $APPLY_PATCHES resolves to EMPTY inside the RUN below, so
-# the patch gate `[ "$APPLY_PATCHES" = "true" ]` would be false for BOTH
-# variants and `latest` would silently be built unpatched.
-ARG APPLY_PATCHES
+FROM build AS builder-base
 
 # --- Sub-layer 1: pristine source snapshot. --------------------------------
 # Copy ONLY the pinned ./frappe tree and commit it. Isolating the frappe COPY
@@ -196,16 +189,9 @@ ARG APPLY_PATCHES
 #
 # bench init (frappe-bench) requires --frappe-path to be a Git repository, but
 # the submodule .git is unusable inside the image. Remove it, then re-initialise
-# a fresh repo here so bench init succeeds. apply-patches.sh then runs in
-# git-backed mode when the patch set is requested.
-#
-# CRITICAL: bench init does a REAL `git clone` of --frappe-path into apps/frappe,
-# so it only sees COMMITTED tree state. apply-patches.sh (sub-layer 2) modifies
-# the working tree; we MUST commit it afterwards, otherwise the bench clone
-# would carry the unpatched `base` commit into apps/frappe and `latest` would
-# be silently built unpatched. base keeps only the pristine `base` commit
-# (genuinely unpatched); latest adds a `patched` commit on top so the clone
-# gets the patched tree.
+# a fresh repo with a single pristine commit so bench init's `git clone` of
+# --frappe-path succeeds. builder-patched applies ./patches directly into the
+# CLONED app (apps/frappe), so no `patched` commit dance is needed here.
 COPY --chown=frappe:frappe frappe/ /tmp/frappe/
 RUN rm -f /tmp/frappe/.git \
     && git config --global --add safe.directory /tmp/frappe \
@@ -213,27 +199,11 @@ RUN rm -f /tmp/frappe/.git \
     && git -C /tmp/frappe add -A \
     && git -C /tmp/frappe -c user.email=x -c user.name=x commit -qm base
 
-# --- Sub-layer 2: patch application (cheap). --------------------------------
-# patches/ and scripts/ are copied AFTER the source commit so editing either
-# only invalidates this cheap layer; sub-layer 3 stays cached for the base
-# variant (its tree is untouched) and correctly rebuilds for the patched
-# variant (the patched commit changes the tree).
-COPY --chown=frappe:frappe patches/ /tmp/patches/
-COPY --chown=frappe:frappe scripts/ /tmp/scripts/
-RUN chmod +x /tmp/scripts/apply-patches.sh \
-    && if [ "$APPLY_PATCHES" = "true" ]; then \
-         /tmp/scripts/apply-patches.sh \
-         && git -C /tmp/frappe add -A \
-         && git -C /tmp/frappe -c user.email=x -c user.name=x commit -qm patched; \
-       else \
-         echo "APPLY_PATCHES=$APPLY_PATCHES => unpatched base variant; NOT applying ./patches."; \
-       fi
-
-# --- Sub-layer 3: bench init (expensive). -----------------------------------
-# Reads the committed /tmp/frappe tree only; invalidated by Frappe source
-# changes (and, for the patched variant, by patch changes). Independent of
-# patches/ and scripts/ file churn.
-
+# --- Sub-layer 2: bench init (expensive). -----------------------------------
+# Reads the committed /tmp/frappe tree only. The cloned apps/frappe KEEPS its
+# .git so builder-patched can run the strict git-backed patch preflight; the
+# .git dirs are stripped in the deploy stages so neither final image ships
+# repo metadata.
 RUN su - frappe -c 'git config --global --add safe.directory "*"' \
     && su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:$PATH && bench init \
       --frappe-path=/tmp/frappe \
@@ -242,10 +212,9 @@ RUN su - frappe -c 'git config --global --add safe.directory "*"' \
       --skip-redis-config-generation \
       --verbose \
       /home/frappe/frappe-bench' \
-    && rm -rf /tmp/frappe /tmp/patches /tmp/scripts \
+    && rm -rf /tmp/frappe \
     && cd /home/frappe/frappe-bench \
-    && echo "{}" > sites/common_site_config.json \
-    && find apps -mindepth 1 -path "*/.git" -exec rm -rf {} +
+    && echo "{}" > sites/common_site_config.json
 
 # opentelemetry packages into the bench virtualenv created by bench init.
 # Separate layer: only re-runs when the bench init layer above changes.
@@ -269,21 +238,52 @@ COPY --chown=frappe:frappe runtime/test_otel.py /home/frappe/frappe-bench/apps/f
 COPY --chown=frappe:frappe resources/gunicorn-otel-conf.py /home/frappe/frappe-bench/apps/frappe/resources/gunicorn-otel-conf.py
 
 # =============================================================================
-# Final stages — runtime only, no build deps. Both funnel the shared builder
-# output through identical runtime wiring; they differ only in the variant labels
-# and the APPLY_PATCHES ARG that selects which bench the builder produced.
+# builder-patched — the `latest` variant, LAYERED on builder-base. Applies the
+# patch set into the bench's apps/frappe (git-backed mode: strict clean check +
+# `git apply --check --3way` preflight) and rebuilds ONLY the frappe app's
+# assets, because the patches touch bundled desk JS (desktop.js, sidebar.js).
+# Python deps were installed pre-patch — a patch must never add a dependency.
 # =============================================================================
-FROM base AS deploy
+FROM builder-base AS builder-patched
+
+COPY --chown=frappe:frappe patches/ /tmp/patches/
+COPY --chown=frappe:frappe scripts/ /tmp/scripts/
+
+RUN su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:$PATH \
+      && export SUBMODULE=/home/frappe/frappe-bench/apps/frappe \
+      && export PATCHES_DIR=/tmp/patches \
+      && /tmp/scripts/apply-patches.sh' \
+    && su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:$PATH \
+      && cd /home/frappe/frappe-bench && bench build --app frappe' \
+    && rm -rf /tmp/patches /tmp/scripts
+
+# =============================================================================
+# Final stages — runtime only, no build deps. Each variant deploys from its own
+# builder output (deploy-base <- builder-base, deploy-latest <- builder-patched)
+# through identical runtime wiring. The apps' .git metadata (kept through the
+# builder stages for the patch preflight) is stripped here so neither final
+# image ships repo metadata.
+# =============================================================================
+FROM base AS deploy-base
 
 USER frappe
 RUN mkdir -p /home/frappe/logs /home/frappe/frappe-bench/logs
-COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
-COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench/sites/assets/assets.json /opt/defaults/assets.json
+COPY --from=builder-base --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
+RUN find /home/frappe/frappe-bench/apps -mindepth 1 -path "*/.git" -exec rm -rf {} +
+COPY --from=builder-base --chown=frappe:frappe /home/frappe/frappe-bench/sites/assets/assets.json /opt/defaults/assets.json
+
+FROM base AS deploy-latest
+
+USER frappe
+RUN mkdir -p /home/frappe/logs /home/frappe/frappe-bench/logs
+COPY --from=builder-patched --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
+RUN find /home/frappe/frappe-bench/apps -mindepth 1 -path "*/.git" -exec rm -rf {} +
+COPY --from=builder-patched --chown=frappe:frappe /home/frappe/frappe-bench/sites/assets/assets.json /opt/defaults/assets.json
 
 # =============================================================================
 # Target frappe-base : variant=base (unpatched reference image).
 # =============================================================================
-FROM deploy AS frappe-base
+FROM deploy-base AS frappe-base
 ARG IMAGE_VERSION
 ARG IMAGE_REVISION
 ARG IMAGE_SOURCE=https://github.com/natindonesia/frappe-framework-patch
@@ -309,7 +309,7 @@ COPY --chmod=0755 resources/fix-db-users.sh /scripts/fix-db-users.sh
 # =============================================================================
 # Target frappe (DEFAULT) : variant=latest (patched, production image).
 # =============================================================================
-FROM deploy AS frappe
+FROM deploy-latest AS frappe
 ARG IMAGE_VERSION
 ARG IMAGE_REVISION
 ARG IMAGE_SOURCE=https://github.com/natindonesia/frappe-framework-patch
