@@ -34,9 +34,7 @@ if [[ "$WANT_OTEL" -eq 1 ]]; then
   if pip install --quiet \
       opentelemetry-api \
       opentelemetry-sdk \
-      opentelemetry-exporter-otlp \
-      pyroscope-io \
-      pyroscope-otel; then
+      opentelemetry-exporter-otlp; then
     echo "   otel installed OK"
   else
     echo "   WARN: could not install opentelemetry; functional OTel tests will SKIP (structural tests still run)."

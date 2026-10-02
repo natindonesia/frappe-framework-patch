@@ -33,9 +33,6 @@ def _run_python(script: str, **extra_env) -> subprocess.CompletedProcess:
 		"OTEL_SERVICE_NAME",
 		"OTEL_TRACES_SAMPLER",
 		"OTEL_TRACES_SAMPLER_ARG",
-		"PYROSCOPE_SERVER_ADDRESS",
-		"PYROSCOPE_APPLICATION_NAME",
-		"PYROSCOPE_SAMPLE_RATE",
 	):
 		env.pop(key, None)
 	env.update(extra_env)
@@ -318,64 +315,6 @@ main()
 		self.assertTrue(all(s["name"].startswith("GET") for s in spans), spans)
 		self.assertTrue(any(s["attributes"].get("http.method") == "GET" for s in spans), spans)
 		self.assertTrue(any(s["attributes"].get("frappe.site") == "tests.local" for s in spans), spans)
-
-
-class TestPyroscopeIntegration(unittest.TestCase):
-	def setUp(self):
-		self._saved_pyro = otel._pyroscope_configured
-		otel._pyroscope_configured = False
-
-	def tearDown(self):
-		otel._pyroscope_configured = self._saved_pyro
-
-	def test_init_pyroscope_noop_without_env(self):
-		with mock.patch.dict(os.environ, {"PYROSCOPE_SERVER_ADDRESS": ""}):
-			with mock.patch("pyroscope.configure") as mock_conf:
-				otel._init_pyroscope()
-				mock_conf.assert_not_called()
-
-	def test_init_pyroscope_configures_and_adds_span_processor(self):
-		from opentelemetry.sdk.trace import TracerProvider
-
-		provider = TracerProvider()
-		with mock.patch.dict(
-			os.environ,
-			{
-				"PYROSCOPE_SERVER_ADDRESS": "http://pyroscope:4040",
-				"PYROSCOPE_APPLICATION_NAME": "test-frappe",
-				"PYROSCOPE_SAMPLE_RATE": "50",
-				"HOSTNAME": "test-host",
-			},
-		):
-			with mock.patch("pyroscope.configure") as mock_conf:
-				otel._init_pyroscope(provider)
-				mock_conf.assert_called_once_with(
-					application_name="test-frappe",
-					server_address="http://pyroscope:4040",
-					sample_rate=50,
-					tags={"host": "test-host"},
-					enable_logging=False,
-				)
-				self.assertTrue(otel._pyroscope_configured)
-
-	def test_init_pyroscope_missing_module_graceful(self):
-		with mock.patch.dict(os.environ, {"PYROSCOPE_SERVER_ADDRESS": "http://pyroscope:4040"}):
-			with mock.patch.dict("sys.modules", {"pyroscope": None}):
-				otel._init_pyroscope()
-
-	def test_boot_pyroscope_only(self):
-		script = (
-			"import json\n"
-			"import frappe.otel\n"
-			"frappe.otel.boot()\n"
-			"print(json.dumps({\"booted\": frappe.otel._booted, \"enabled\": frappe.otel._enabled, \"pyro\": frappe.otel._pyroscope_configured}))\n"
-		)
-		proc = _run_python(script, PYROSCOPE_SERVER_ADDRESS="http://localhost:4040")
-		self.assertEqual(proc.returncode, 0, proc.stderr)
-		data = json.loads(proc.stdout.strip().splitlines()[-1])
-		self.assertTrue(data["booted"])
-		self.assertFalse(data["enabled"])
-		self.assertTrue(data["pyro"])
 
 
 if __name__ == "__main__":

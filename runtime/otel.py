@@ -31,7 +31,6 @@ _enabled = False
 _booted = False
 _tracer = None
 _rq_instrumented = False
-_pyroscope_configured = False
 
 
 def _get_sampler(sdk_always_on, sdk_always_off, trace_id_ratio_based, parent_based):
@@ -69,80 +68,10 @@ def _env_int(name, default):
 		return default
 
 
-def _init_pyroscope(provider=None):
-	global _pyroscope_configured
-
-	server_address = os.getenv("PYROSCOPE_SERVER_ADDRESS")
-	if not server_address:
-		return
-
-	if not _pyroscope_configured:
-		try:
-			import pyroscope
-		except ImportError:
-			logger.warning("PYROSCOPE_SERVER_ADDRESS is set but pyroscope-io is not installed; profiling disabled")
-			return
-		except Exception:
-			logger.warning("Failed to import pyroscope", exc_info=True)
-			return
-
-		app_name = os.getenv("PYROSCOPE_APPLICATION_NAME") or os.getenv("OTEL_SERVICE_NAME") or "frappe-app"
-		tags = {}
-		if hostname := os.getenv("HOSTNAME"):
-			tags["host"] = hostname
-
-		kwargs = {
-			"application_name": app_name,
-			"server_address": server_address,
-			"sample_rate": _env_int("PYROSCOPE_SAMPLE_RATE", 100),
-			"tags": tags,
-			"enable_logging": os.getenv("PYROSCOPE_ENABLE_LOGGING", "0").lower() in {"1", "true", "yes"},
-		}
-		if oncpu_env := os.getenv("PYROSCOPE_ONCPU"):
-			kwargs["oncpu"] = oncpu_env.lower() not in {"0", "false", "no"}
-		if gil_env := os.getenv("PYROSCOPE_GIL_ONLY"):
-			kwargs["gil_only"] = gil_env.lower() not in {"0", "false", "no"}
-		if user := os.getenv("PYROSCOPE_BASIC_AUTH_USERNAME"):
-			kwargs["basic_auth_username"] = user
-		if password := os.getenv("PYROSCOPE_BASIC_AUTH_PASSWORD"):
-			kwargs["basic_auth_password"] = password
-		if tenant := os.getenv("PYROSCOPE_TENANT_ID"):
-			kwargs["tenant_id"] = tenant
-
-		try:
-			pyroscope.configure(**kwargs)
-			_pyroscope_configured = True
-			logger.info("Pyroscope profiler configured for %s at %s", app_name, server_address)
-		except Exception:
-			logger.warning("Failed to configure pyroscope", exc_info=True)
-			return
-
-	if provider is not None:
-		try:
-			from pyroscope.otel import PyroscopeSpanProcessor
-
-			provider.add_span_processor(PyroscopeSpanProcessor())
-			logger.info("pyroscope-otel span processor registered")
-		except ImportError:
-			logger.debug("pyroscope-otel is not installed; span profile correlation disabled")
-		except Exception:
-			logger.warning("Failed to register PyroscopeSpanProcessor", exc_info=True)
-
 def boot():
 	global _enabled, _booted, _tracer
 
-	if _booted:
-		return
-
-	otel_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	pyroscope_server = os.getenv("PYROSCOPE_SERVER_ADDRESS")
-
-	if not otel_endpoint and not pyroscope_server:
-		return
-
-	if pyroscope_server and not otel_endpoint:
-		_init_pyroscope(None)
-		_booted = True
+	if _booted or not os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
 		return
 
 	try:
@@ -180,7 +109,6 @@ def boot():
 				max_export_batch_size=_env_int("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 512),
 			)
 		)
-		_init_pyroscope(provider)
 		trace.set_tracer_provider(provider)
 		_tracer = trace.get_tracer("frappe")
 	except Exception:
