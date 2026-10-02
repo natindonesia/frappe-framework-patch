@@ -244,9 +244,9 @@ COPY --chown=frappe:frappe resources/gunicorn-otel-conf.py /home/frappe/frappe-b
 # pristine tree semantics) keeps `git status --porcelain` empty; the overlay
 # files are ignored by the frappe repo's .gitignore rules, so `git add -A` only
 # picks up the vendored files.
-RUN cd /home/frappe/frappe-bench/apps/frappe \
-    && git add -A \
-    && git -c user.email=x -c user.name=x commit -qm "otel runtime overlays"
+RUN su - frappe -c 'cd /home/frappe/frappe-bench/apps/frappe \
+      && git add -A \
+      && git -c user.email=x -c user.name=x commit -qm "otel runtime overlays"'
 
 # =============================================================================
 # builder-patched — the `latest` variant, LAYERED on builder-base. Applies the
