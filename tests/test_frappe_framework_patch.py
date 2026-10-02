@@ -8,9 +8,14 @@ tree, no .git), so the repository submodule working tree is left untouched.
 Coverage:
 
   1. Structural / static
-       - the pinned submodule exists and is a clean git checkout at HEAD;
-       - every *.patch under patches/ applies to the pristine pinned tree;
-       - the patched Python sources compile (py_compile).
+        - the pinned submodule exists and is a clean git checkout at HEAD;
+        - every *.patch under patches/ applies to the pristine pinned tree;
+        - the patched Python sources compile (py_compile).
+  2. Patch delta (patch vs pristine base must genuinely differ)
+        - every patch defines exactly one observable marker;
+        - pristine tree: markers flipped the "unpatched" way;
+        - patched tree:  markers flipped the "patched" way;
+        - the CI patch-delta script and workflow step exist and cover every patch.
   2. Functional (OTel, optional)
        - the trace_context helper imports and reports availability;
        - a W3C trace-context roundtrip works when OpenTelemetry is installed;
@@ -39,6 +44,46 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build-images.yml"
 PATCHED_FILES = [
     "frappe/integrations/trace_context.py",
     "frappe/utils/background_jobs.py",
+]
+
+# The patch-delta contract. One marker per patch under patches/:
+#   (patch filename, submodule-relative path, fixed-string marker, kind)
+# kind "added":   pristine tree must NOT contain the marker, patched tree MUST.
+# kind "removed": pristine tree must contain the marker, patched tree must NOT.
+# Keep in sync with scripts/ci/patch-delta-verify.sh (which checks the same
+# markers INSIDE the built frappe:latest / frappe:base images).
+PATCH_DELTA_SCRIPT = REPO_ROOT / "scripts" / "ci" / "patch-delta-verify.sh"
+PATCH_MARKERS = [
+    (
+        "0001-otel-trace-context-propagation.patch",
+        "frappe/integrations/trace_context.py",
+        "def get_trace_context",
+        "added",
+    ),
+    (
+        "0002-remove-frappe-build-comment.patch",
+        "frappe/templates/base.html",
+        "Built on Frappe",
+        "removed",
+    ),
+    (
+        "0003-desktop-remove-frappe-support-link.patch",
+        "frappe/desk/page/desktop/desktop.js",
+        "Frappe Support",
+        "removed",
+    ),
+    (
+        "0004-desktop-remove-about-link.patch",
+        "frappe/desk/page/desktop/desktop.js",
+        "frappe.ui.toolbar.show_about",
+        "removed",
+    ),
+    (
+        "0005-sidebar-remove-crm-banner.patch",
+        "frappe/public/js/frappe/ui/sidebar/sidebar.js",
+        "Switch to CRM",
+        "removed",
+    ),
 ]
 
 
@@ -104,6 +149,82 @@ class PatchApplyTests(unittest.TestCase):
             py_compile_file(root / "frappe/utils/background_jobs.py")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _marker_present(root: Path, rel: str, marker: str) -> bool:
+    target = root / rel
+    if not target.exists():
+        return False
+    return marker in target.read_text(errors="replace")
+
+
+class PatchDeltaTests(unittest.TestCase):
+    """Patch vs pristine base must genuinely differ: every patch flips exactly
+    one observable marker, in the right direction. Runs against a pristine
+    `git archive` copy — no Docker, no submodule mutation."""
+
+    def setUp(self):
+        if not (SUBMODULE / "frappe").exists():
+            self.fail("submodule ./frappe not initialized; run `git submodule update --init`")
+
+    def test_every_patch_has_exactly_one_marker(self):
+        patch_names = sorted(p.name for p in PATCHES_DIR.glob("*.patch"))
+        marker_names = sorted(m[0] for m in PATCH_MARKERS)
+        self.assertEqual(patch_names, marker_names, "every patch needs a marker entry")
+        self.assertGreater(len(marker_names), 0, "no *.patch files under patches/")
+
+    def test_marker_paths_exist_in_pristine_tree(self):
+        tmp = _pristine_tree()
+        try:
+            root = tmp / "frappe"
+            for patch, rel, marker, kind in PATCH_MARKERS:
+                if kind == "removed":
+                    self.assertTrue(
+                        (root / rel).exists(),
+                        f"{patch}: {rel} must exist upstream for a removal patch",
+                    )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_pristine_tree_is_unpatched_on_every_marker(self):
+        tmp = _pristine_tree()
+        try:
+            root = tmp / "frappe"
+            for patch, rel, marker, kind in PATCH_MARKERS:
+                present = _marker_present(root, rel, marker)
+                self.assertEqual(
+                    present, kind == "removed",
+                    f"{patch}: pristine base marker state wrong for {rel} :: {marker}",
+                )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_patched_tree_flips_every_marker(self):
+        tmp = _pristine_tree()
+        try:
+            root = tmp / "frappe"
+            _apply_patches(tmp)
+            for patch, rel, marker, kind in PATCH_MARKERS:
+                present = _marker_present(root, rel, marker)
+                self.assertEqual(
+                    present, kind == "added",
+                    f"{patch}: patched tree marker state wrong for {rel} :: {marker}",
+                )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_patch_delta_script_and_workflow_step_exist(self):
+        self.assertTrue(PATCH_DELTA_SCRIPT.exists(), f"missing {PATCH_DELTA_SCRIPT}")
+        script = PATCH_DELTA_SCRIPT.read_text()
+        for patch, rel, marker, kind in PATCH_MARKERS:
+            self.assertIn(patch, script, f"{PATCH_DELTA_SCRIPT.name} must reference {patch}")
+            self.assertIn(rel, script, f"{PATCH_DELTA_SCRIPT.name} must check {rel}")
+            self.assertIn(marker, script, f"{PATCH_DELTA_SCRIPT.name} must check marker from {patch}")
+        self.assertIn("frappe:latest", script)
+        self.assertIn("frappe:base", script)
+        self.assertTrue(WORKFLOW.exists(), f"workflow missing: {WORKFLOW}")
+        steps = WORKFLOW.read_text()
+        self.assertIn("patch-delta-verify.sh", steps, "workflow must run the patch-delta check")
 
 
 def _load_trace_module():

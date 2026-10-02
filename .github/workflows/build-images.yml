@@ -89,6 +89,8 @@ jobs:
         run: bash scripts/ci/vanilla-build.sh
       - name: Pre-validate base unpatched and latest patched
         run: bash scripts/ci/base-verify.sh
+      - name: Pre-validate patch delta (every patch present in latest, absent in base)
+        run: bash scripts/ci/patch-delta-verify.sh
       - name: Pre-validate Nginx runtime and assets (latest)
         run: bash scripts/ci/vanilla-test-nginx.sh
       - name: Pre-validate Socket.IO runtime (latest)
