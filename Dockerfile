@@ -237,6 +237,17 @@ COPY --chown=frappe:frappe runtime/pyinstrument_middleware.py /home/frappe/frapp
 COPY --chown=frappe:frappe runtime/test_otel.py /home/frappe/frappe-bench/apps/frappe/frappe/tests/test_otel.py
 COPY --chown=frappe:frappe resources/gunicorn-otel-conf.py /home/frappe/frappe-bench/apps/frappe/resources/gunicorn-otel-conf.py
 
+# Commit the overlays in the bench clone's git. The app clone keeps its .git so
+# builder-patched can run apply-patches.sh in git-backed mode, whose strict
+# clean check refuses ANY uncommitted change — including these untracked
+# overlays. Committing them (they ship in BOTH variants, so they belong to the
+# pristine tree semantics) keeps `git status --porcelain` empty; the overlay
+# files are ignored by the frappe repo's .gitignore rules, so `git add -A` only
+# picks up the vendored files.
+RUN cd /home/frappe/frappe-bench/apps/frappe \
+    && git add -A \
+    && git -c user.email=x -c user.name=x commit -qm "otel runtime overlays"
+
 # =============================================================================
 # builder-patched — the `latest` variant, LAYERED on builder-base. Applies the
 # patch set into the bench's apps/frappe (git-backed mode: strict clean check +
