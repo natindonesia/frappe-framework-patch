@@ -1,0 +1,74 @@
+# Weekly hygiene for the GHCR packages: delete package versions older than
+# CLEANUP_MAX_AGE_DAYS that the current release no longer references, keeping
+# everything the current tags (latest / base / latest-granian / buildcache:main)
+# resolve to plus their cosign signatures and attestations — regardless of age.
+# This removes the sha256-<digest> versions GHCR auto-lists for retired
+# signature/attestation manifests (the visible package-page noise).
+name: Cleanup GHCR package versions
+
+on:
+  schedule:
+    # 04:17 UTC daily; cheap, idempotent, protected digests always spared.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report deletions without deleting
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  # GITHUB_TOKEN may delete versions of packages linked to this repository.
+  packages: write
+
+concurrency:
+  group: cleanup-ghcr-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: 'Prune stale package versions (frappe, frappe-buildcache)'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout cleanup scripts
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      # Digest resolution via docker buildx imagetools inspect needs registry
+      # auth when the package is private (public packages work anonymously).
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prune frappe (latest, base, latest-granian protected)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+        run: |
+          if [ "$DRY_RUN" = "1" ]; then
+            bash scripts/ci/ghcr-cleanup.sh --dry-run \
+              "${{ vars.SECONDARY_REGISTRY_NAMESPACE || github.repository_owner }}" frappe \
+              latest base latest-granian
+          else
+            bash scripts/ci/ghcr-cleanup.sh \
+              "${{ vars.SECONDARY_REGISTRY_NAMESPACE || github.repository_owner }}" frappe \
+              latest base latest-granian
+          fi
+      - name: Prune frappe-buildcache (main protected)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+        run: |
+          if [ "$DRY_RUN" = "1" ]; then
+            bash scripts/ci/ghcr-cleanup.sh --dry-run \
+              "${{ vars.SECONDARY_REGISTRY_NAMESPACE || github.repository_owner }}" frappe-buildcache \
+              main
+          else
+            bash scripts/ci/ghcr-cleanup.sh \
+              "${{ vars.SECONDARY_REGISTRY_NAMESPACE || github.repository_owner }}" frappe-buildcache \
+              main
+          fi
