@@ -51,6 +51,10 @@ jobs:
     name: 'Build + pre-validate base/latest/latest-granian'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    permissions:
+      contents: read
+      # Push buildx layer-cache manifests to GHCR (frappe-buildcache).
+      packages: write
     steps:
       - name: Checkout patch repository with Frappe submodule
         uses: actions/checkout@v7
@@ -68,6 +72,15 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+      # Auth for the shared buildx registry-cache ref (ghcr.io/.../frappe-buildcache,
+      # resolved by scripts/ci/common.sh:build_cache_ref). Override
+      # BUILD_CACHE_REGISTRY only together with an extra login step for that registry.
+      - name: Login to GHCR (buildx layer cache)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build patched Docker image (frappe:latest)
         run: bash scripts/ci/vanilla-build.sh
       - name: Build unpatched base Docker image (frappe:base)

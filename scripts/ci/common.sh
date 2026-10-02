@@ -8,6 +8,8 @@
 #     extra override files).
 #   * `secondary_registry()` / `publish_secondary()` mirror a tested image to the
 #     optional second registry (ghcr.io).
+#   * `build_cache_ref()` prints the buildx registry-cache reference shared by
+#     every image build (default ghcr.io — no Actions-cache 10 GB LRU to fight).
 #   * `push_with_retry()` pushes an image with bounded retries for transient
 #     registry errors (GHCR "unknown blob").
 #   * `set_image_metadata_args()` fills IMAGE_METADATA_ARGS with the
@@ -69,6 +71,19 @@ set_image_metadata_args() {
     --build-arg "IMAGE_CREATED=${created}"
     --build-arg "FRAPPE_SHA=${frappe_sha}"
   )
+}
+
+# build_cache_ref() -- print the single buildx registry-cache reference shared
+# by ALL image variants (base / latest / granian builds read and write it).
+# GHCR by default: registry cache blobs are not subject to the 10 GB
+# Actions-cache LRU eviction that made cold `bench init` rebuilds chronic.
+# Overrides: BUILD_CACHE_REGISTRY / BUILD_CACHE_NAMESPACE / BUILD_CACHE_TAG.
+# NOTE: changing BUILD_CACHE_REGISTRY to a non-GHCR registry requires adding a
+# matching docker/login-action step for it in the workflow.
+build_cache_ref() {
+  local reg="${BUILD_CACHE_REGISTRY:-ghcr.io}"
+  local ns="${BUILD_CACHE_NAMESPACE:-${SECONDARY_REGISTRY_NAMESPACE:-${GITHUB_REPOSITORY_OWNER:-natindonesia}}}"
+  printf '%s/%s/frappe-buildcache:%s' "$(lower "$reg")" "$(lower "$ns")" "${BUILD_CACHE_TAG:-main}"
 }
 
 # secondary_registry() -- print "<registry>/<namespace>" for the OPTIONAL second

@@ -173,10 +173,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # =============================================================================
-# Builder stage — shared by BOTH variants. Copies pinned ./frappe source,
-# applies ./patches ONLY when APPLY_PATCHES=true, then bench-inits the tree.
-# This is the only frequently-invalidated layer; identical to the upstream
-# recipe except the patch gate.
+# Builder stage — shared by BOTH variants, split into three cache-bounded
+# sub-layers so the expensive `bench init` (pip + yarn over the whole app tree)
+# re-runs ONLY when the committed Frappe source itself changes, not when
+# patches/ or scripts/ churn. Identical to the upstream recipe except the
+# patch gate.
 # =============================================================================
 FROM build AS builder
 
@@ -187,28 +188,39 @@ FROM build AS builder
 # variants and `latest` would silently be built unpatched.
 ARG APPLY_PATCHES
 
-# Assemble source from the pinned submodule; conditionally apply the patch set.
-COPY --chown=frappe:frappe frappe/ /tmp/frappe/
-COPY --chown=frappe:frappe patches/ /tmp/patches/
-COPY --chown=frappe:frappe scripts/ /tmp/scripts/
-
+# --- Sub-layer 1: pristine source snapshot. --------------------------------
+# Copy ONLY the pinned ./frappe tree and commit it. Isolating the frappe COPY
+# here is what makes the expensive bench init below cacheable across patch/
+# helper-script edits: bench init only reads /tmp/frappe, so its cache keys
+# track this tree, never the patch or script inputs.
+#
 # bench init (frappe-bench) requires --frappe-path to be a Git repository, but
 # the submodule .git is unusable inside the image. Remove it, then re-initialise
 # a fresh repo here so bench init succeeds. apply-patches.sh then runs in
 # git-backed mode when the patch set is requested.
 #
 # CRITICAL: bench init does a REAL `git clone` of --frappe-path into apps/frappe,
-# so it only sees COMMITTED tree state. apply-patches.sh modifies the working
-# tree; we MUST commit it afterwards, otherwise the bench clone would carry the
-# unpatched `base` commit into apps/frappe and `latest` would be silently built
-# unpatched. base keeps only the pristine `base` commit (genuinely unpatched);
-# latest adds a `patched` commit on top so the clone gets the patched tree.
+# so it only sees COMMITTED tree state. apply-patches.sh (sub-layer 2) modifies
+# the working tree; we MUST commit it afterwards, otherwise the bench clone
+# would carry the unpatched `base` commit into apps/frappe and `latest` would
+# be silently built unpatched. base keeps only the pristine `base` commit
+# (genuinely unpatched); latest adds a `patched` commit on top so the clone
+# gets the patched tree.
+COPY --chown=frappe:frappe frappe/ /tmp/frappe/
 RUN rm -f /tmp/frappe/.git \
     && git config --global --add safe.directory /tmp/frappe \
     && git init /tmp/frappe \
     && git -C /tmp/frappe add -A \
-    && git -C /tmp/frappe -c user.email=x -c user.name=x commit -qm base \
-    && chmod +x /tmp/scripts/apply-patches.sh \
+    && git -C /tmp/frappe -c user.email=x -c user.name=x commit -qm base
+
+# --- Sub-layer 2: patch application (cheap). --------------------------------
+# patches/ and scripts/ are copied AFTER the source commit so editing either
+# only invalidates this cheap layer; sub-layer 3 stays cached for the base
+# variant (its tree is untouched) and correctly rebuilds for the patched
+# variant (the patched commit changes the tree).
+COPY --chown=frappe:frappe patches/ /tmp/patches/
+COPY --chown=frappe:frappe scripts/ /tmp/scripts/
+RUN chmod +x /tmp/scripts/apply-patches.sh \
     && if [ "$APPLY_PATCHES" = "true" ]; then \
          /tmp/scripts/apply-patches.sh \
          && git -C /tmp/frappe add -A \
@@ -216,6 +228,11 @@ RUN rm -f /tmp/frappe/.git \
        else \
          echo "APPLY_PATCHES=$APPLY_PATCHES => unpatched base variant; NOT applying ./patches."; \
        fi
+
+# --- Sub-layer 3: bench init (expensive). -----------------------------------
+# Reads the committed /tmp/frappe tree only; invalidated by Frappe source
+# changes (and, for the patched variant, by patch changes). Independent of
+# patches/ and scripts/ file churn.
 
 RUN su - frappe -c 'git config --global --add safe.directory "*"' \
     && su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:$PATH && bench init \
