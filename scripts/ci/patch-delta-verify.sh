@@ -17,7 +17,10 @@ set -euo pipefail
 # shellcheck source=scripts/ci/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-PKG="/home/frappe/frappe-bench/apps/frappe/frappe"
+# Frappe package root inside the images: bench app dir is
+# /home/frappe/frappe-bench/apps/frappe, and the package itself lives directly
+# under it (matching the marker path used by base-verify.sh).
+PKG="/home/frappe/frappe-bench/apps/frappe"
 
 # check <image> <expect-present: yes|no> <relpath> <fixed-marker> <patch-label>
 check() {
