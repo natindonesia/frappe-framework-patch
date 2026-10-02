@@ -77,6 +77,11 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: frappe-app
+      # Per-request pyinstrument profiling on HTTP spans (default off). See
+      # frappe.pyinstrument_middleware.
+      OTEL_PYINSTRUMENT: ${OTEL_PYINSTRUMENT:-}
+      OTEL_PYINSTRUMENT_INTERVAL: ${OTEL_PYINSTRUMENT_INTERVAL:-}
+      OTEL_PYINSTRUMENT_RSS_INTERVAL: ${OTEL_PYINSTRUMENT_RSS_INTERVAL:-}
     volumes:
     - sites-data:/home/frappe/frappe-bench/sites
     restart: unless-stopped

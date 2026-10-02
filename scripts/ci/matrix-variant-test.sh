@@ -49,8 +49,12 @@ export CI_PROJECT
 # variants then re-run with OTLP empty to verify the gate-off path.
 OTEL_EXPORTER_OTLP_ENDPOINT="http://otel-collector:4318"
 NGINX_OTEL_ENDPOINT="otel-collector:4317"
+# Turn on the per-request pyinstrument profiler for the compose-otel-profile
+# contract step (gate default-off for normal deploys).
+OTEL_PYINSTRUMENT="1"
 export OTEL_EXPORTER_OTLP_ENDPOINT
 export NGINX_OTEL_ENDPOINT
+export OTEL_PYINSTRUMENT
 
 # Granian needs more time to become ready on a shared runner.
 CI_WAIT_ROUNDS=60
@@ -140,6 +144,7 @@ echo "ping response: $body"
 echo "$body" | grep -q '"message":"pong"' || { echo "::error::[$VARIANT] expected pong"; exit 1; }
 
 run_step compose-otel-spans
+run_step compose-otel-profile
 run_step granian-crud
 # File upload + access contract (403 guest / 200 auth, private+public GET).
 run_step file-upload-access

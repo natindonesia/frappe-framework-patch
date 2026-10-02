@@ -31,6 +31,7 @@ _enabled = False
 _booted = False
 _tracer = None
 _rq_instrumented = False
+_redis_instrumented = False
 
 
 def _get_sampler(sdk_always_on, sdk_always_off, trace_id_ratio_based, parent_based):
@@ -118,7 +119,7 @@ def boot():
 		logger.warning("Failed to initialize OpenTelemetry tracing", exc_info=True)
 		return
 
-	for installer in (_patch_sql, _instrument_rq):
+	for installer in (_patch_sql, _instrument_rq, _instrument_redis):
 		try:
 			installer()
 		except Exception:
@@ -144,6 +145,22 @@ def _instrument_rq():
 
 	RQInstrumentation().instrument()
 	_rq_instrumented = True
+
+
+def _instrument_redis():
+	global _redis_instrumented
+
+	if _redis_instrumented:
+		return
+
+	try:
+		from opentelemetry.instrumentation.redis import RedisInstrumentor
+	except ImportError:
+		logger.debug("opentelemetry redis instrumentation unavailable, skipping")
+		return
+
+	RedisInstrumentor().instrument()
+	_redis_instrumented = True
 
 
 def _get_sql_span_name(query: str) -> str:
@@ -272,5 +289,12 @@ def wrap_application(wsgi_app):
 				span.set_attribute("frappe.site", site)
 		except Exception:
 			logger.debug("otel.request_hook failed", exc_info=True)
+
+	try:
+		from frappe.pyinstrument_middleware import wrap
+
+		wsgi_app = wrap(wsgi_app)
+	except ImportError:
+		pass
 
 	return OpenTelemetryMiddleware(wsgi_app, request_hook=request_hook)

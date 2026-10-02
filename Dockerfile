@@ -236,7 +236,9 @@ RUN su - frappe -c '/home/frappe/frappe-bench/env/bin/pip install \
       opentelemetry-sdk \
       opentelemetry-api \
       opentelemetry-exporter-otlp-proto-http \
-      opentelemetry-instrumentation-wsgi'
+      opentelemetry-instrumentation-wsgi \
+      opentelemetry-instrumentation-redis \
+      pyinstrument'
 
 # Overlay the OTEL emitter files onto the bench tree. bench init git-clones the
 # app, so uncommitted files would otherwise never reach the image and gunicorn
@@ -245,6 +247,7 @@ RUN su - frappe -c '/home/frappe/frappe-bench/env/bin/pip install \
 # ./runtime (not part of the pristine upstream submodule).
 COPY --chown=frappe:frappe runtime/otel.py /home/frappe/frappe-bench/apps/frappe/frappe/otel.py
 COPY --chown=frappe:frappe runtime/otel_wsgi.py /home/frappe/frappe-bench/apps/frappe/frappe/otel_wsgi.py
+COPY --chown=frappe:frappe runtime/pyinstrument_middleware.py /home/frappe/frappe-bench/apps/frappe/frappe/pyinstrument_middleware.py
 COPY --chown=frappe:frappe runtime/test_otel.py /home/frappe/frappe-bench/apps/frappe/frappe/tests/test_otel.py
 COPY --chown=frappe:frappe resources/gunicorn-otel-conf.py /home/frappe/frappe-bench/apps/frappe/resources/gunicorn-otel-conf.py
 

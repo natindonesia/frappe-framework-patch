@@ -74,6 +74,82 @@ class TestOtelGate(unittest.TestCase):
 		self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
+class TestRedisInstrumentation(unittest.TestCase):
+	"""_instrument_redis() with the real contrib module swapped for a stub,
+	so no redis server or global redis patching is needed."""
+
+	class _FakeRedisInstrumentation:
+		calls = 0
+
+		def instrument(self):
+			type(self).calls += 1
+
+	def setUp(self):
+		self._saved_flag = otel._redis_instrumented
+		otel._redis_instrumented = False
+		type(self)._FakeRedisInstrumentation.calls = 0
+		self._patcher = mock.patch.dict(
+			sys.modules,
+			{
+				"opentelemetry": mock.MagicMock(),
+				"opentelemetry.instrumentation": mock.MagicMock(),
+				"opentelemetry.instrumentation.redis": mock.MagicMock(
+					RedisInstrumentor=self._FakeRedisInstrumentation
+				),
+			},
+		)
+		self._patcher.start()
+
+	def tearDown(self):
+		self._patcher.stop()
+		otel._redis_instrumented = self._saved_flag
+
+	def test_instruments_and_sets_flag(self):
+		otel._instrument_redis()
+		self.assertEqual(self._FakeRedisInstrumentation.calls, 1)
+		self.assertTrue(otel._redis_instrumented)
+
+	def test_idempotent(self):
+		otel._instrument_redis()
+		otel._instrument_redis()
+		self.assertEqual(self._FakeRedisInstrumentation.calls, 1)
+
+
+def _load_pyinstrument_middleware():
+	"""Load the pure middleware module from runtime/ without the frappe
+	package namespace, so these tests run without opentelemetry/pyinstrument."""
+	runtime_dir = os.path.dirname(os.path.abspath(__file__))
+	if runtime_dir not in sys.path:
+		sys.path.insert(0, runtime_dir)
+	import importlib
+
+	return importlib.import_module("pyinstrument_middleware")
+
+
+class TestSerializeStack(unittest.TestCase):
+	"""Pure-function tests; run even without opentelemetry installed."""
+
+	def test_short_stack_passthrough(self):
+		pm = _load_pyinstrument_middleware()
+		self.assertEqual(pm._serialize_stack(["a", "b"]), "a;b")
+
+	def test_depth_capped_at_64_with_middle_marker(self):
+		pm = _load_pyinstrument_middleware()
+		stack = ["frame%d" % i for i in range(100)]
+		parts = pm._serialize_stack(stack).split(";")
+		self.assertEqual(len(parts), 64)
+		self.assertIn("...", parts)
+		self.assertEqual(parts[:16], stack[:16])
+		self.assertEqual(parts[-4:], stack[-4:])
+
+	def test_chars_capped_at_2048(self):
+		pm = _load_pyinstrument_middleware()
+		stack = ["x" * 100] * 30
+		out = pm._serialize_stack(stack)
+		self.assertLessEqual(len(out), 2048)
+		self.assertTrue(out.endswith("..."))
+
+
 @unittest.skipUnless(HAVE_OTEL, "requires opentelemetry packages")
 class OTelInProcessTestCase(unittest.TestCase):
 	def setUp(self):
@@ -315,6 +391,168 @@ main()
 		self.assertTrue(all(s["name"].startswith("GET") for s in spans), spans)
 		self.assertTrue(any(s["attributes"].get("http.method") == "GET" for s in spans), spans)
 		self.assertTrue(any(s["attributes"].get("frappe.site") == "tests.local" for s in spans), spans)
+
+
+@unittest.skipUnless(HAVE_OTEL, "requires opentelemetry packages")
+class TestPyinstrumentMiddleware(unittest.TestCase):
+	_script = """
+import io
+import json
+
+
+def main():
+	import sys
+
+	try:
+		import frappe.pyinstrument_middleware as _pm
+	except ImportError:
+		# Local runs outside the image: module lives next to this test file.
+		sys.path.insert(0, "runtime")
+		import pyinstrument_middleware as _pm
+
+	from opentelemetry import trace
+	from opentelemetry.sdk.trace import TracerProvider
+	from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+	from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+	exporter = InMemorySpanExporter()
+	provider = TracerProvider()
+	provider.add_span_processor(SimpleSpanProcessor(exporter))
+	trace.set_tracer_provider(provider)
+
+	import frappe
+
+	frappe.pyinstrument_middleware = _pm
+	sys.modules["frappe.pyinstrument_middleware"] = _pm
+
+	import frappe.otel
+
+	frappe.otel._booted = True
+	frappe.otel._enabled = True
+
+	def app(environ, start_response):
+		import time
+
+		# pyinstrument samples on call/return events; a pure sleep would
+		# produce ~1 lumped sample. Burn some wall time in Python calls so
+		# the busy phase yields >=5 samples, then sleep to keep wall >> cpu.
+		def _f():
+			return 0
+
+		for _ in range(200000):
+			_f()
+		time.sleep(0.03)
+		start_response("200 OK", [("Content-Type", "text/plain")])
+		return [b"ok"]
+
+	middleware = frappe.otel.wrap_application(app)
+
+	environ = {
+		"REQUEST_METHOD": "GET",
+		"PATH_INFO": "/",
+		"QUERY_STRING": "",
+		"SERVER_NAME": "localhost",
+		"SERVER_PORT": "80",
+		"SERVER_PROTOCOL": "HTTP/1.1",
+		"HTTP_HOST": "tests.local:8000",
+		"HTTP_TRACEPARENT": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		"wsgi.version": (1, 0),
+		"wsgi.url_scheme": "http",
+		"wsgi.input": io.BytesIO(),
+		"wsgi.errors": io.StringIO(),
+		"wsgi.multithread": False,
+		"wsgi.multiprocess": False,
+		"wsgi.run_once": False,
+	}
+
+	status = {}
+
+	def start_response(s, headers, exc_info=None):
+		status["status"] = s
+
+	body = middleware(environ, start_response)
+	chunks = []
+	for chunk in body:
+		chunks.append(chunk)
+	if hasattr(body, "close"):
+		body.close()
+
+	provider.force_flush()
+	spans = []
+	for s in exporter.get_finished_spans():
+		events = list(s.events or [])
+		spans.append(
+			{
+				"name": s.name,
+				"thread_cpu_ns": s.attributes.get("frappe.thread_cpu_ns"),
+				"profile_sample_count": s.attributes.get("frappe.profile.sample_count"),
+				"samples": [
+					{
+						"source": (e.attributes or {}).get("sample.source"),
+						"stack": (e.attributes or {}).get("sample.stack") or "",
+					}
+					for e in events
+					if e.name == "pyinstrument.sample"
+				],
+				"rss_events": [
+					(e.attributes or {}).get("process.rss_bytes", 0)
+					for e in events
+					if e.name == "system.sample"
+				],
+			}
+		)
+	print(
+		json.dumps(
+			{
+				"status": status.get("status"),
+				"body": b"".join(chunks).decode(),
+				"spans": spans,
+			}
+		)
+	)
+
+
+main()
+"""
+
+	def test_profiled_request_records_sample_events(self):
+		proc = _run_python(
+			self._script,
+			OTEL_PYINSTRUMENT="1",
+			OTEL_PYINSTRUMENT_INTERVAL="0.001",
+			OTEL_PYINSTRUMENT_RSS_INTERVAL="0.05",
+		)
+		self.assertEqual(proc.returncode, 0, proc.stderr)
+		data = json.loads(proc.stdout.strip().splitlines()[-1])
+		self.assertEqual(data["status"], "200 OK")
+		self.assertEqual(data["body"], "ok")
+		spans = data["spans"]
+		self.assertTrue(spans, "expected at least one exported span")
+		span = spans[0]
+		self.assertTrue(span["name"].startswith("GET"), spans)
+		self.assertGreaterEqual(len(span["samples"]), 5)
+		self.assertIsInstance(span["thread_cpu_ns"], int)
+		self.assertGreater(span["thread_cpu_ns"], 0)
+		self.assertGreater(span["profile_sample_count"], 0)
+		self.assertTrue(span["samples"], span)
+		for sample in span["samples"]:
+			self.assertEqual(sample["source"], "pyinstrument_sample")
+			self.assertTrue(sample["stack"], sample)
+		# RSS sampler thread may or may not fire within the 30ms request;
+		# informational only.
+		self.assertGreaterEqual(len(span["rss_events"]), 0)
+
+	def test_gate_off_records_no_sample_events(self):
+		proc = _run_python(self._script)
+		self.assertEqual(proc.returncode, 0, proc.stderr)
+		data = json.loads(proc.stdout.strip().splitlines()[-1])
+		self.assertEqual(data["status"], "200 OK")
+		self.assertEqual(data["body"], "ok")
+		spans = data["spans"]
+		self.assertTrue(spans, "expected at least one exported span")
+		span = spans[0]
+		self.assertEqual(len(span["samples"]), 0)
+		self.assertIsNone(span["thread_cpu_ns"])
 
 
 if __name__ == "__main__":
