@@ -14,7 +14,11 @@ name: Build & Test Docker and Granian Images
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'experiments/**'
   pull_request:
+    paths-ignore:
+      - 'experiments/**'
   workflow_dispatch:
     inputs:
       push_to_registry:
