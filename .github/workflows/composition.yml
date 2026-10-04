@@ -2,8 +2,10 @@
 # Builds the composed runtime + per-app payload artifact images and pushes
 # them to ghcr. Runs when:
 #   1. the composition dir changes on main, or
-#   2. the base image workflow finishes (new latest-granian / artifacts
-#      published) — the composition always rebuilds on top of fresh bases.
+#   2. a base image version is published to the ghcr `frappe` package
+#      (base / latest / latest-granian) — the composition always rebuilds
+#      on top of fresh bases. Own pushes go to the `fayolex-composed`
+#      package, which is filtered out, so no trigger loop.
 name: Composition Experiment
 
 on:
@@ -12,9 +14,8 @@ on:
     paths:
       - 'experiments/frappe-oci-composition/**'
   workflow_dispatch:
-  workflow_run:
-    workflows: ["Build & Test Docker and Granian Images"]
-    types: [completed]
+  registry_package:
+    types: [published]
 
 permissions:
   contents: read
@@ -29,8 +30,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     if: >-
-      github.event_name != 'workflow_run' ||
-      github.event.workflow_run.conclusion == 'success'
+      github.event_name != 'registry_package' ||
+      github.event.package.name == 'frappe'
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +74,7 @@ jobs:
           context: ${{ env.CONTEXT }}
           push: true
           # Empty target string builds the Dockerfile's final (runtime) stage.
-          targets: ${{ matrix.target }}
+          target: ${{ matrix.target }}
           tags: ${{ env.IMAGE }}:${{ matrix.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
