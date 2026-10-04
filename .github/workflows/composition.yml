@@ -103,10 +103,10 @@ jobs:
 
       - name: Test bench + installed apps inside running stack
         run: |
-          docker compose run --rm --no-deps init bash -c '
+          docker compose exec -T web bash -c '
             set -e
             cd /home/frappe/frappe-bench
-            bench --site "$SITE_NAME" list-apps
+            bench --site "${SITE_NAME:-crm.localhost}" list-apps
             python -c "import frappe; print(\"frappe\", frappe.__version__)"
           '
 
