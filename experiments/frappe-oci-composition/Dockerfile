@@ -10,13 +10,17 @@
 #
 # App CODE is NOT baked in — each app payload is image-mounted read-only at
 # runtime from its own immutable artifact (compose.yaml, issue #3 section 5).
-# Only dependency METADATA is pulled from the app artifacts at build time.
+# Dependency METADATA is pulled from the app artifacts at build time; assets
+# are stitched into the sites volume at init time. Nothing is built here.
 #
 # The app list below must mirror the app list in compose.yaml.
 # Add/remove an app: edit both files' lists.
 # =============================================================================
 
-# Dependency metadata sources — one stage per selected app.
+# Dependency metadata sources — one stage per selected app. Each artifact
+# carries the app payload plus its OWN prebuilt assets (assets/, assets.json,
+# apps.txt), built once in the app's own repo and baked into the artifact.
+# No asset building happens here — this image only stitches.
 FROM ghcr.io/natindonesia/erpnext:latest-standalone AS src-erpnext
 FROM ghcr.io/natindonesia/hrms:latest-standalone AS src-hrms
 FROM ghcr.io/natindonesia/fayolex_extension:latest-standalone AS src-fayolex_extension
@@ -28,63 +32,21 @@ FROM ghcr.io/natindonesia/fayolex_decision_science_tools:latest-standalone AS sr
 # rootfs root so the artifact can be image-mounted directly at
 # /home/frappe/frappe-bench/apps/<app>. Built and tagged by the profile-"build"
 # services in compose.yaml; NOT part of the runtime image.
-# The standalone sources carry NO built bundles, so a shared build stage
-# installs each app's node_modules, runs `bench build` once (producing every
-# app's bundles under sites/assets plus the merged assets.json), copies each
-# app's built assets into its own payload (assets/), and drops node_modules
-# so the artifacts stay small.
 # =============================================================================
-FROM ghcr.io/natindonesia/frappe:latest-granian AS build-assets
-USER root
-ENV FRAPPE_DOCKER_BUILD=1
-COPY --from=src-erpnext /opt/frappe/apps/erpnext/ /home/frappe/frappe-bench/apps/erpnext/
-COPY --from=src-hrms /opt/frappe/apps/hrms/ /home/frappe/frappe-bench/apps/hrms/
-COPY --from=src-fayolex_extension /opt/frappe/apps/fayolex_extension/ /home/frappe/frappe-bench/apps/fayolex_extension/
-COPY --from=src-eps /opt/frappe/apps/eps/ /home/frappe/frappe-bench/apps/eps/
-COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/ /home/frappe/frappe-bench/apps/fayolex_decision_science_tools/
-# bench refuses to build as root; hand the copied apps to the frappe user.
-# hrms's build script runs `corepack enable`, which rewrites the node bin dir
-# shims, so that dir must be writable by frappe too.
-RUN chown -R frappe:frappe \
-    /home/frappe/frappe-bench/apps/erpnext \
-    /home/frappe/frappe-bench/apps/hrms \
-    /home/frappe/frappe-bench/apps/fayolex_extension \
-    /home/frappe/frappe-bench/apps/eps \
-    /home/frappe/frappe-bench/apps/fayolex_decision_science_tools \
-    /home/frappe/.nvm
-USER frappe
-RUN cd /home/frappe/frappe-bench \
-    && for app in erpnext hrms fayolex_extension eps fayolex_decision_science_tools; do \
-        if [ -f "apps/$app/package.json" ]; then (cd "apps/$app" && yarn install); fi; \
-    done \
-    && bench build \
-    && for app in erpnext hrms fayolex_extension eps fayolex_decision_science_tools; do \
-        if [ -d "sites/assets/$app" ]; then \
-            mkdir -p "apps/$app/assets" \
-            && cp -a "sites/assets/$app/." "apps/$app/assets/"; \
-        fi; \
-        rm -rf "apps/$app/node_modules"; \
-    done
-
 FROM scratch AS artifact-erpnext
-COPY --from=build-assets /home/frappe/frappe-bench/apps/erpnext/ /
+COPY --from=src-erpnext /opt/frappe/apps/erpnext/ /
 FROM scratch AS artifact-hrms
-COPY --from=build-assets /home/frappe/frappe-bench/apps/hrms/ /
+COPY --from=src-hrms /opt/frappe/apps/hrms/ /
 FROM scratch AS artifact-fayolex_extension
-COPY --from=build-assets /home/frappe/frappe-bench/apps/fayolex_extension/ /
+COPY --from=src-fayolex_extension /opt/frappe/apps/fayolex_extension/ /
 FROM scratch AS artifact-eps
-COPY --from=build-assets /home/frappe/frappe-bench/apps/eps/ /
+COPY --from=src-eps /opt/frappe/apps/eps/ /
 FROM scratch AS artifact-fayolex_ds
-COPY --from=build-assets /home/frappe/frappe-bench/apps/fayolex_decision_science_tools/ /
+COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/ /
 
 FROM ghcr.io/natindonesia/frappe:latest-granian
 
 USER root
-
-# Merged asset manifest produced by the build-assets stage: frappe's own
-# entries plus every selected app's bundles, for init to merge into the
-# bench asset map in the sites volume.
-COPY --from=build-assets /home/frappe/frappe-bench/sites/assets/assets.json /opt/frappe/composed-assets.json
 
 # uv replaces pip for installing the composition's dependencies.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/
