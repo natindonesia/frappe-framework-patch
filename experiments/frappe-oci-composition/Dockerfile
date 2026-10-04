@@ -43,12 +43,15 @@ COPY --from=src-fayolex_extension /opt/frappe/apps/fayolex_extension/ /home/frap
 COPY --from=src-eps /opt/frappe/apps/eps/ /home/frappe/frappe-bench/apps/eps/
 COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/ /home/frappe/frappe-bench/apps/fayolex_decision_science_tools/
 # bench refuses to build as root; hand the copied apps to the frappe user.
+# hrms's build script runs `corepack enable`, which rewrites the node bin dir
+# shims, so that dir must be writable by frappe too.
 RUN chown -R frappe:frappe \
     /home/frappe/frappe-bench/apps/erpnext \
     /home/frappe/frappe-bench/apps/hrms \
     /home/frappe/frappe-bench/apps/fayolex_extension \
     /home/frappe/frappe-bench/apps/eps \
-    /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+    /home/frappe/frappe-bench/apps/fayolex_decision_science_tools \
+    /home/frappe/.nvm
 USER frappe
 RUN cd /home/frappe/frappe-bench \
     && for app in erpnext hrms fayolex_extension eps fayolex_decision_science_tools; do \
