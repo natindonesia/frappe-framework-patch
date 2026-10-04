@@ -259,24 +259,34 @@ services:
       - sites-data:/home/frappe/frappe-bench/sites:ro
       - type: image
         source: composed/erpnext:latest
-        target: /home/frappe/frappe-bench/apps/erpnext
+        target: /home/frappe/frappe-bench/sites/assets/erpnext
         read_only: true
+        image:
+          subpath: erpnext/erpnext/public
       - type: image
         source: composed/hrms:latest
-        target: /home/frappe/frappe-bench/apps/hrms
+        target: /home/frappe/frappe-bench/sites/assets/hrms
         read_only: true
+        image:
+          subpath: hrms/hrms/public
       - type: image
         source: composed/fayolex_extension:latest
-        target: /home/frappe/frappe-bench/apps/fayolex_extension
+        target: /home/frappe/frappe-bench/sites/assets/fayolex_extension
         read_only: true
+        image:
+          subpath: fayolex_extension/fayolex_extension/public
       - type: image
         source: composed/eps:latest
-        target: /home/frappe/frappe-bench/apps/eps
+        target: /home/frappe/frappe-bench/sites/assets/eps
         read_only: true
+        image:
+          subpath: eps/eps/public
       - type: image
         source: composed/fayolex_decision_science_tools:latest
-        target: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+        target: /home/frappe/frappe-bench/sites/assets/fayolex_decision_science_tools
         read_only: true
+        image:
+          subpath: fayolex_decision_science_tools/fayolex_decision_science_tools/public
     ports:
       - "${HTTP_PORT:-8085}:8080"
     depends_on:
