@@ -108,8 +108,11 @@ services:
     # init.sh (baked in the base image) sets DB/redis hosts, writes
     # sites/apps.txt from the mounted app set, creates the site and, on
     # restarts, migrates using exactly this release's artifacts (issue #3
-    # section 9). On first boot we additionally install every selected app
-    # and build desk assets into the shared sites volume.
+    # section 9). On first boot we additionally install every selected app.
+    # Asset stitching is NOT done here: the merged asset map ships baked in
+    # the runtime image (/opt/defaults/assets.json, copied to the sites
+    # volume by init.sh) and nginx serves app asset files straight from the
+    # read-only app image mounts.
     command:
       - -c
       - |
@@ -127,22 +130,9 @@ services:
               echo "[init] install-app $$app FAILED - continuing without it" >&2
               continue
             fi
-            # Materialize each app's prebuilt assets from its immutable
-            # artifact (apps are never built at deploy time) and merge the
-            # app's asset-map snapshot into the bench asset map written by
-            # init.sh (frappe base entries dedupe on merge).
-            if [ -d "apps/$$app/assets" ]; then
-              mkdir -p "sites/assets/$$app"
-              cp -a "apps/$$app/assets/." "sites/assets/$$app/"
-            fi
-            echo "[init] $$app: assets=$$( [ -d apps/$$app/assets ] && echo yes || echo no ) assets.json=$$( [ -f apps/$$app/assets.json ] && echo yes || echo no )"
-            if [ -f "apps/$$app/assets.json" ]; then
-              python3 -c "import json; b = json.load(open('sites/assets/assets.json')); a = json.load(open('apps/$$app/assets.json')); print('[init] merging', len(a), 'entries from', '$$app'); b.update(a); json.dump(b, open('sites/assets/assets.json', 'w'), indent=1)"
-            fi
           done
           set +x
-          echo "[init] final assets.json entries: $$(python3 -c 'import json;print(len(json.load(open("sites/assets/assets.json"))))')"
-          touch sites/.composed-built
+          echo "[init] apps installed"
         fi
     environment:
       SITE_NAME: ${SITE_NAME:-crm.localhost}
@@ -261,6 +251,26 @@ services:
       FRAPPE_SITE_NAME_HEADER: ${SITE_NAME:-crm.localhost}
     volumes:
       - sites-data:/home/frappe/frappe-bench/sites:ro
+      - type: image
+        source: composed/erpnext:latest
+        target: /home/frappe/frappe-bench/apps/erpnext
+        read_only: true
+      - type: image
+        source: composed/hrms:latest
+        target: /home/frappe/frappe-bench/apps/hrms
+        read_only: true
+      - type: image
+        source: composed/fayolex_extension:latest
+        target: /home/frappe/frappe-bench/apps/fayolex_extension
+        read_only: true
+      - type: image
+        source: composed/eps:latest
+        target: /home/frappe/frappe-bench/apps/eps
+        read_only: true
+      - type: image
+        source: composed/fayolex_decision_science_tools:latest
+        target: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+        read_only: true
     ports:
       - "${HTTP_PORT:-8085}:8080"
     depends_on:

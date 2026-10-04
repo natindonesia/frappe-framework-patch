@@ -87,5 +87,52 @@ RUN printf '%s\n' \
 RUN mkdir -p /home/frappe/frappe-bench/logs /home/frappe/logs \
     && chown frappe:frappe /home/frappe/frappe-bench/logs /home/frappe/logs
 
+USER root
+
+# =============================================================================
+# Asset stitching (issue #3): the composition never builds assets. Each app
+# artifact ships its own prebuilt assets/ plus an asset-map snapshot
+# (apps/<app>/assets.json); here we compose the bench asset map by merging
+# every app snapshot on top of the frappe base map baked in the runtime image
+# at /opt/defaults/assets.json. init.sh copies this manifest to the sites
+# volume on every boot (so stale volumes get refreshed), while the asset
+# FILES are served directly off the read-only app image mounts by nginx (see
+# the template below) — no copying of asset files at deploy time.
+# =============================================================================
+COPY --from=src-erpnext /opt/frappe/apps/erpnext/assets.json /tmp/manifests/erpnext.json
+COPY --from=src-hrms /opt/frappe/apps/hrms/assets.json /tmp/manifests/hrms.json
+COPY --from=src-fayolex_extension /opt/frappe/apps/fayolex_extension/assets.json /tmp/manifests/fayolex_extension.json
+COPY --from=src-eps /opt/frappe/apps/eps/assets.json /tmp/manifests/eps.json
+COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/assets.json /tmp/manifests/fayolex_decision_science_tools.json
+
+# Merge every app snapshot over the frappe base manifest. Apps whose artifact
+# predates the convention carry no snapshot and are skipped.
+RUN python3 - <<'EOF'
+import glob, json
+merged = json.load(open("/opt/defaults/assets.json"))
+for path in sorted(glob.glob("/tmp/manifests/*.json")):
+    merged.update(json.load(open(path)))
+json.dump(merged, open("/opt/defaults/assets.json", "w"), indent=1)
+EOF
+
+# nginx: extend the base template with per-app /assets/<app>/ locations that
+# alias straight into the read-only app image mounts, so prebuilt app assets
+# are served without ever being copied into the sites volume.
+RUN python3 - <<'EOF'
+APPS = ["erpnext", "hrms", "fayolex_extension", "eps", "fayolex_decision_science_tools"]
+pattern = "|".join(APPS)
+block = (
+    "\tlocation ~ ^/assets/(?<appname>" + pattern + ")(?<assetpath>/.*)$ {\n"
+    "\t\talias /home/frappe/frappe-bench/apps/$appname/assets$assetpath;\n"
+    "\t}\n\n"
+)
+path = "/templates/nginx/frappe.conf.template"
+template = open(path).read()
+old = "\tlocation /assets {\n\t\ttry_files $uri =404;\n\t}\n"
+assert old in template, "/assets location not found in nginx template"
+template = template.replace(old, block + old)
+open(path, "w").write(template)
+EOF
+
 USER frappe
 WORKDIR /home/frappe/frappe-bench
