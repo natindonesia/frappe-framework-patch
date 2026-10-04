@@ -33,10 +33,6 @@ x-frappe-volumes: &frappe-volumes
     target: /home/frappe/frappe-bench/apps/eps
     read_only: true
   - type: image
-    source: composed/indonesia_payroll:latest
-    target: /home/frappe/frappe-bench/apps/indonesia_payroll
-    read_only: true
-  - type: image
     source: composed/fayolex_decision_science_tools:latest
     target: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
     read_only: true
@@ -72,10 +68,6 @@ services:
   artifact-eps:
     image: composed/eps:latest
     build: { <<: *artifact-build, target: artifact-eps }
-    profiles: ["build"]
-  artifact-indonesia_payroll:
-    image: composed/indonesia_payroll:latest
-    build: { <<: *artifact-build, target: artifact-indonesia_payroll }
     profiles: ["build"]
   artifact-fayolex_decision_science_tools:
     image: composed/fayolex_decision_science_tools:latest

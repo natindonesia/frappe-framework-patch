@@ -21,7 +21,6 @@ FROM ghcr.io/natindonesia/erpnext:latest-standalone AS src-erpnext
 FROM ghcr.io/natindonesia/hrms:latest-standalone AS src-hrms
 FROM ghcr.io/natindonesia/fayolex_extension:latest-standalone AS src-fayolex_extension
 FROM ghcr.io/natindonesia/eps:latest-standalone AS src-eps
-FROM ghcr.io/natindonesia/indonesia_payroll:latest-standalone AS src-indonesia_payroll
 FROM ghcr.io/natindonesia/fayolex_decision_science_tools:latest-standalone AS src-fayolex_ds
 
 # =============================================================================
@@ -38,8 +37,6 @@ FROM scratch AS artifact-fayolex_extension
 COPY --from=src-fayolex_extension /opt/frappe/apps/fayolex_extension/ /
 FROM scratch AS artifact-eps
 COPY --from=src-eps /opt/frappe/apps/eps/ /
-FROM scratch AS artifact-indonesia_payroll
-COPY --from=src-indonesia_payroll /opt/frappe/apps/indonesia_payroll/ /
 FROM scratch AS artifact-fayolex_ds
 COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/ /
 
@@ -54,7 +51,6 @@ COPY --from=src-erpnext /opt/frappe/apps/erpnext/pyproject.toml /deps/erpnext/py
 COPY --from=src-hrms /opt/frappe/apps/hrms/pyproject.toml /deps/hrms/pyproject.toml
 COPY --from=src-fayolex_extension /opt/frappe/apps/fayolex_extension/pyproject.toml /deps/fayolex_extension/pyproject.toml
 COPY --from=src-eps /opt/frappe/apps/eps/pyproject.toml /deps/eps/pyproject.toml
-COPY --from=src-indonesia_payroll /opt/frappe/apps/indonesia_payroll/pyproject.toml /deps/indonesia_payroll/pyproject.toml
 COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/pyproject.toml /deps/fayolex_decision_science_tools/pyproject.toml
 
 # Union of every selected app's [project].dependencies -> one uv resolution
@@ -81,7 +77,6 @@ RUN printf '%s\n' \
         /home/frappe/frappe-bench/apps/hrms \
         /home/frappe/frappe-bench/apps/fayolex_extension \
         /home/frappe/frappe-bench/apps/eps \
-        /home/frappe/frappe-bench/apps/indonesia_payroll \
         /home/frappe/frappe-bench/apps/fayolex_decision_science_tools \
         > /home/frappe/frappe-bench/env/lib/python3.14/site-packages/composed-apps.pth
 
