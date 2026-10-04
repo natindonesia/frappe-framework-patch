@@ -62,17 +62,22 @@ RUN mkdir -p /out/assets /manifests \
     && if [ -f /opt/frappe/apps/hrms/assets.json ]; then cp /opt/frappe/apps/hrms/assets.json /manifests/; fi \
     && if [ -d /opt/frappe/apps/hrms/assets ]; then cp -a /opt/frappe/apps/hrms/assets/. /out/assets/; fi
 FROM src-fayolex_extension AS prep-fayolex_extension
+# Un-built app: no assets.json (nothing bundled); its static asset tree is
+# the package's public/ directory, served verbatim at /assets/fayolex_extension/.
 RUN mkdir -p /out/assets /manifests \
     && if [ -f /opt/frappe/apps/fayolex_extension/assets.json ]; then cp /opt/frappe/apps/fayolex_extension/assets.json /manifests/; fi \
-    && if [ -d /opt/frappe/apps/fayolex_extension/assets ]; then cp -a /opt/frappe/apps/fayolex_extension/assets/. /out/assets/; fi
+    && if [ -d /opt/frappe/apps/fayolex_extension/assets ]; then cp -a /opt/frappe/apps/fayolex_extension/assets/. /out/assets/; \
+       elif [ -d /opt/frappe/apps/fayolex_extension/fayolex_extension/public ]; then cp -a /opt/frappe/apps/fayolex_extension/fayolex_extension/public/. /out/assets/; fi
 FROM src-eps AS prep-eps
 RUN mkdir -p /out/assets /manifests \
     && if [ -f /opt/frappe/apps/eps/assets.json ]; then cp /opt/frappe/apps/eps/assets.json /manifests/; fi \
     && if [ -d /opt/frappe/apps/eps/assets ]; then cp -a /opt/frappe/apps/eps/assets/. /out/assets/; fi
 FROM src-fayolex_ds AS prep-fayolex_ds
+# Un-built backend-only app: static assets are the package public/ tree.
 RUN mkdir -p /out/assets /manifests \
     && if [ -f /opt/frappe/apps/fayolex_decision_science_tools/assets.json ]; then cp /opt/frappe/apps/fayolex_decision_science_tools/assets.json /manifests/; fi \
-    && if [ -d /opt/frappe/apps/fayolex_decision_science_tools/assets ]; then cp -a /opt/frappe/apps/fayolex_decision_science_tools/assets/. /out/assets/; fi
+    && if [ -d /opt/frappe/apps/fayolex_decision_science_tools/assets ]; then cp -a /opt/frappe/apps/fayolex_decision_science_tools/assets/. /out/assets/; \
+       elif [ -d /opt/frappe/apps/fayolex_decision_science_tools/fayolex_decision_science_tools/public ]; then cp -a /opt/frappe/apps/fayolex_decision_science_tools/fayolex_decision_science_tools/public/. /out/assets/; fi
 
 # Asset-only artifacts: each carries exactly one app's prebuilt site asset
 # tree at its rootfs root so compose can image-mount it directly at
