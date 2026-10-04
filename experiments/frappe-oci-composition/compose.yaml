@@ -1,0 +1,279 @@
+# =============================================================================
+# Composed Frappe deployment (issue #3 model), Docker Compose flavor.
+#
+# One composed runtime image (Dockerfile in this directory) carries the bench
+# + frappe + the UNION of Python dependencies of every selected app. App code
+# itself is mounted read-only as OCI image volumes from the independently
+# published app artifacts, so each app remains an immutable, independently
+# versioned artifact while all apps share the one Python environment.
+#
+# Usage:
+#   docker compose build init    # build composed-frappe-granian:latest
+#   docker compose up -d
+#
+# Mutable state (sites, DB, Redis, logs) lives in volumes, never in artifacts.
+# =============================================================================
+
+x-frappe-volumes: &frappe-volumes
+  - sites-data:/home/frappe/frappe-bench/sites
+  - type: image
+    source: composed/erpnext:latest
+    target: /home/frappe/frappe-bench/apps/erpnext
+    read_only: true
+  - type: image
+    source: composed/hrms:latest
+    target: /home/frappe/frappe-bench/apps/hrms
+    read_only: true
+  - type: image
+    source: composed/fayolex_extension:latest
+    target: /home/frappe/frappe-bench/apps/fayolex_extension
+    read_only: true
+  - type: image
+    source: composed/eps:latest
+    target: /home/frappe/frappe-bench/apps/eps
+    read_only: true
+  - type: image
+    source: composed/indonesia_payroll:latest
+    target: /home/frappe/frappe-bench/apps/indonesia_payroll
+    read_only: true
+  - type: image
+    source: composed/fayolex_decision_science_tools:latest
+    target: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+    read_only: true
+
+x-frappe-build: &frappe-build
+  context: .
+  dockerfile: Dockerfile
+
+# =============================================================================
+# App payload artifacts (issue #3 sections 1 and 5): built here through
+# Compose's normal build mechanism, tagged composed/<app>:latest, and
+# image-mounted read-only by every runtime service. The "build" profile keeps
+# them out of `up` — they are artifacts, not processes:
+#   docker compose --profile build build
+# =============================================================================
+x-artifact-build: &artifact-build
+  context: .
+  dockerfile: Dockerfile
+
+services:
+  artifact-erpnext:
+    image: composed/erpnext:latest
+    build: { <<: *artifact-build, target: artifact-erpnext }
+    profiles: ["build"]
+  artifact-hrms:
+    image: composed/hrms:latest
+    build: { <<: *artifact-build, target: artifact-hrms }
+    profiles: ["build"]
+  artifact-fayolex_extension:
+    image: composed/fayolex_extension:latest
+    build: { <<: *artifact-build, target: artifact-fayolex_extension }
+    profiles: ["build"]
+  artifact-eps:
+    image: composed/eps:latest
+    build: { <<: *artifact-build, target: artifact-eps }
+    profiles: ["build"]
+  artifact-indonesia_payroll:
+    image: composed/indonesia_payroll:latest
+    build: { <<: *artifact-build, target: artifact-indonesia_payroll }
+    profiles: ["build"]
+  artifact-fayolex_decision_science_tools:
+    image: composed/fayolex_decision_science_tools:latest
+    build: { <<: *artifact-build, target: artifact-fayolex_ds }
+    profiles: ["build"]
+
+  mariadb:
+    image: mariadb:10.8
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --skip-innodb-read-only-compressed
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-admin}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -u root -p$$MYSQL_ROOT_PASSWORD || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  init:
+    image: composed-frappe-granian:latest
+    build: *frappe-build
+    entrypoint: /bin/bash
+    # init.sh (baked in the base image) sets DB/redis hosts, writes
+    # sites/apps.txt from the mounted app set, creates the site and, on
+    # restarts, migrates using exactly this release's artifacts (issue #3
+    # section 9). On first boot we additionally install every selected app
+    # and build desk assets into the shared sites volume.
+    command:
+      - -c
+      - |
+        set -e
+        cd /home/frappe/frappe-bench
+        first=0
+        [ -d "sites/$${SITE_NAME}" ] || first=1
+        /usr/local/bin/init.sh
+        if [ "$$first" = 1 ]; then
+          for app in $$(ls apps | grep -vx frappe); do
+            # One broken app must not take down the whole composition;
+            # failures are logged and skipped.
+            if ! bench --site "$${SITE_NAME}" install-app "$$app"; then
+              echo "[init] install-app $$app FAILED - continuing without it" >&2
+              continue
+            fi
+            # Materialize each app's prebuilt assets from its immutable
+            # artifact (apps are never built at deploy time).
+            if [ -d "apps/$$app/assets" ]; then
+              mkdir -p "sites/assets/$$app"
+              cp -a "apps/$$app/assets/." "sites/assets/$$app/"
+            fi
+            # Merge the artifact's asset-map snapshot into the bench asset
+            # map written by init.sh (frappe's own entries dedupe on merge).
+            if [ -f "apps/$$app/assets.json" ]; then
+              python3 -c "import json, sys; app = sys.argv[1]; b = json.load(open('sites/assets/assets.json')); a = json.load(open(f'apps/{app}/assets.json')); b.update(a); json.dump(b, open('sites/assets/assets.json', 'w'), indent=1)" "$$app"
+            fi
+          done
+          touch sites/.composed-built
+        fi
+    environment:
+      SITE_NAME: ${SITE_NAME:-crm.localhost}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+    volumes: *frappe-volumes
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    image: composed-frappe-granian:latest
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - 'cd /home/frappe/frappe-bench/sites && . ../env/bin/activate && exec granian --interface wsgi --host 0.0.0.0 --port 8000 --workers 2 --blocking-threads 4 frappe.otel_wsgi:application'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: frappe-app
+    volumes: *frappe-volumes
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  worker:
+    image: composed-frappe-granian:latest
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench worker'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: frappe-worker-default
+    volumes: *frappe-volumes
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  worker-long:
+    image: composed-frappe-granian:latest
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench worker --queue long'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: frappe-worker-long
+    volumes: *frappe-volumes
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  worker-short:
+    image: composed-frappe-granian:latest
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench worker --queue short'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: frappe-worker-short
+    volumes: *frappe-volumes
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  schedule:
+    image: composed-frappe-granian:latest
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench schedule'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: frappe-scheduler
+    volumes: *frappe-volumes
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  socketio:
+    image: composed-frappe-granian:latest
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec node apps/frappe/socketio.js'
+    volumes: *frappe-volumes
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  nginx:
+    image: composed-frappe-granian:latest
+    entrypoint:
+      - /usr/local/bin/nginx-entrypoint.sh
+    environment:
+      BACKEND: web:8000
+      SOCKETIO: socketio:9000
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      FRAPPE_SITE_NAME_HEADER: ${SITE_NAME:-crm.localhost}
+    volumes:
+      - sites-data:/home/frappe/frappe-bench/sites:ro
+    ports:
+      - "${HTTP_PORT:-8085}:8080"
+    depends_on:
+      web:
+        condition: service_started
+      socketio:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  mariadb-data: null
+  sites-data: null

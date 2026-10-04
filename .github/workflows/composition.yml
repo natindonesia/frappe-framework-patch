@@ -1,0 +1,79 @@
+# Composition experiment (experiments/frappe-oci-composition/).
+# Builds the composed runtime + per-app payload artifact images and pushes
+# them to ghcr. Runs when:
+#   1. the composition dir changes on main, or
+#   2. the base image workflow finishes (new latest-granian / artifacts
+#      published) — the composition always rebuilds on top of fresh bases.
+name: Composition Experiment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'experiments/frappe-oci-composition/**'
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Build & Test Docker and Granian Images"]
+    types: [completed]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository_owner }}/fayolex-composed
+  CONTEXT: experiments/frappe-oci-composition
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Runtime (Dockerfile default target) — the granian-based
+          # frappe bench used by compose web/worker/schedule/socketio.
+          - target: ''
+            tag: frappe-granian
+          # Per-app payload artifacts (assets / assets.json / apps.txt),
+          # mounted read-only into the runtime by compose.
+          - target: artifact-erpnext
+            tag: erpnext
+          - target: artifact-hrms
+            tag: hrms
+          - target: artifact-fayolex_extension
+            tag: fayolex_extension
+          - target: artifact-eps
+            tag: eps
+          - target: artifact-indonesia_payroll
+            tag: indonesia_payroll
+          - target: artifact-fayolex_decision_science_tools
+            tag: fayolex_decision_science_tools
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.target || 'runtime' }}
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ env.CONTEXT }}
+          push: true
+          # Empty target string builds the Dockerfile's final (runtime) stage.
+          targets: ${{ matrix.target }}
+          tags: ${{ env.IMAGE }}:${{ matrix.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
