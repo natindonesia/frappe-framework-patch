@@ -112,6 +112,37 @@ merged = json.load(open("/opt/defaults/assets.json"))
 for path in sorted(glob.glob("/tmp/manifests/*.json")):
     merged.update(json.load(open(path)))
 json.dump(merged, open("/opt/defaults/assets.json", "w"), indent=1)
+
+# The frappe base manifest can drift from the dist tree actually baked in the
+# runtime image (rebuilt bundles change their content hash while the baked
+# snapshot keeps the old one). Reconcile: any frappe entry whose target file
+# is missing is re-pointed at the real hashed file of the same bundle in the
+# image's dist tree. App snapshots are authoritative and left untouched.
+import glob, json, os
+merged = json.load(open("/opt/defaults/assets.json"))
+frappe_root = "/home/frappe/frappe-bench/apps/frappe/frappe/public/dist"
+changed = 0
+for key, val in list(merged.items()):
+    if not val.startswith("/assets/frappe/dist/"):
+        continue
+    rel = val[len("/assets/frappe/"):]
+    if os.path.exists(f"/home/frappe/frappe-bench/apps/frappe/frappe/public/{rel}"):
+        continue
+    stem, ext = key.rsplit(".", 1)
+    candidates = [
+        p for p in glob.glob(f"{frappe_root}/{ext}/{stem}.*.{ext}")
+        if not p.endswith(".map")
+    ]
+    if len(candidates) == 1:
+        merged[key] = "/assets/frappe/dist/%s/%s" % (
+            ext, os.path.basename(candidates[0]))
+        changed += 1
+    elif not candidates:
+        raise SystemExit(f"bundle {key}: no built file in dist, refusing to ship")
+    else:
+        raise SystemExit(f"bundle {key}: ambiguous dist candidates {candidates}")
+json.dump(merged, open("/opt/defaults/assets.json", "w"), indent=1)
+print(f"reconciled {changed} stale frappe bundle hashes")
 EOF
 
 USER frappe
