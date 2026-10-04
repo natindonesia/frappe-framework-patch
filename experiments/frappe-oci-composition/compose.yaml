@@ -119,6 +119,7 @@ services:
         [ -d "sites/$${SITE_NAME}" ] || first=1
         /usr/local/bin/init.sh
         if [ "$$first" = 1 ]; then
+          set -x
           for app in $$(ls apps | grep -vx frappe); do
             # One broken app must not take down the whole composition;
             # failures are logged and skipped.
@@ -134,10 +135,13 @@ services:
               mkdir -p "sites/assets/$$app"
               cp -a "apps/$$app/assets/." "sites/assets/$$app/"
             fi
+            echo "[init] $$app: assets=$$( [ -d apps/$$app/assets ] && echo yes || echo no ) assets.json=$$( [ -f apps/$$app/assets.json ] && echo yes || echo no )"
             if [ -f "apps/$$app/assets.json" ]; then
-              python3 -c "import json; b = json.load(open('sites/assets/assets.json')); a = json.load(open('apps/$$app/assets.json')); b.update(a); json.dump(b, open('sites/assets/assets.json', 'w'), indent=1)"
+              python3 -c "import json; b = json.load(open('sites/assets/assets.json')); a = json.load(open('apps/$$app/assets.json')); print('[init] merging', len(a), 'entries from', '$$app'); b.update(a); json.dump(b, open('sites/assets/assets.json', 'w'), indent=1)"
             fi
           done
+          set +x
+          echo "[init] final assets.json entries: $$(python3 -c 'import json;print(len(json.load(open("sites/assets/assets.json"))))')"
           touch sites/.composed-built
         fi
     environment:
