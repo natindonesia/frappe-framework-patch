@@ -154,6 +154,12 @@ services:
               echo "[init] install-app $$app FAILED - continuing without it" >&2
               continue
             fi
+            # Bench convention, zero copying: sites/assets/<app> symlinks to
+            # the app package's public/ tree (bundles live in public/dist,
+            # prebuilt inside each app's immutable artifact). nginx resolves
+            # the symlink through its own read-only app image mounts.
+            rm -rf "sites/assets/$$app"
+            ln -s "/home/frappe/frappe-bench/apps/$$app/$$app/public" "sites/assets/$$app"
           done
           set +x
           echo "[init] apps installed"
