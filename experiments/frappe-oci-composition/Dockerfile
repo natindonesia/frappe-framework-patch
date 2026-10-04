@@ -44,6 +44,50 @@ COPY --from=src-eps /opt/frappe/apps/eps/ /
 FROM scratch AS artifact-fayolex_ds
 COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/ /
 
+# Asset-only artifacts: each carries exactly one app's prebuilt site asset
+# tree at its rootfs root so compose can image-mount it directly at
+# sites/assets/<app>, shadowing any stale copy in the shared sites volume.
+FROM scratch AS asset-fayolex_ds
+COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/assets/ /
+
+# Prep stages: normalize each app's optional asset payload. Backend-only
+# apps (no prebuilt assets/ or assets.json in their artifact) produce an
+# empty asset tree and an empty manifest instead of failing the build.
+FROM src-erpnext AS prep-erpnext
+RUN mkdir -p /out/assets /manifests \
+    && if [ -f /opt/frappe/apps/erpnext/assets.json ]; then cp /opt/frappe/apps/erpnext/assets.json /manifests/; fi \
+    && if [ -d /opt/frappe/apps/erpnext/assets ]; then cp -a /opt/frappe/apps/erpnext/assets/. /out/assets/; fi
+FROM src-hrms AS prep-hrms
+RUN mkdir -p /out/assets /manifests \
+    && if [ -f /opt/frappe/apps/hrms/assets.json ]; then cp /opt/frappe/apps/hrms/assets.json /manifests/; fi \
+    && if [ -d /opt/frappe/apps/hrms/assets ]; then cp -a /opt/frappe/apps/hrms/assets/. /out/assets/; fi
+FROM src-fayolex_extension AS prep-fayolex_extension
+RUN mkdir -p /out/assets /manifests \
+    && if [ -f /opt/frappe/apps/fayolex_extension/assets.json ]; then cp /opt/frappe/apps/fayolex_extension/assets.json /manifests/; fi \
+    && if [ -d /opt/frappe/apps/fayolex_extension/assets ]; then cp -a /opt/frappe/apps/fayolex_extension/assets/. /out/assets/; fi
+FROM src-eps AS prep-eps
+RUN mkdir -p /out/assets /manifests \
+    && if [ -f /opt/frappe/apps/eps/assets.json ]; then cp /opt/frappe/apps/eps/assets.json /manifests/; fi \
+    && if [ -d /opt/frappe/apps/eps/assets ]; then cp -a /opt/frappe/apps/eps/assets/. /out/assets/; fi
+FROM src-fayolex_ds AS prep-fayolex_ds
+RUN mkdir -p /out/assets /manifests \
+    && if [ -f /opt/frappe/apps/fayolex_decision_science_tools/assets.json ]; then cp /opt/frappe/apps/fayolex_decision_science_tools/assets.json /manifests/; fi \
+    && if [ -d /opt/frappe/apps/fayolex_decision_science_tools/assets ]; then cp -a /opt/frappe/apps/fayolex_decision_science_tools/assets/. /out/assets/; fi
+
+# Asset-only artifacts: each carries exactly one app's prebuilt site asset
+# tree at its rootfs root so compose can image-mount it directly at
+# sites/assets/<app>, shadowing any stale copy in the shared sites volume.
+FROM scratch AS asset-erpnext
+COPY --from=prep-erpnext /out/assets/ /
+FROM scratch AS asset-hrms
+COPY --from=prep-hrms /out/assets/ /
+FROM scratch AS asset-fayolex_extension
+COPY --from=prep-fayolex_extension /out/assets/ /
+FROM scratch AS asset-eps
+COPY --from=prep-eps /out/assets/ /
+FROM scratch AS asset-fayolex_ds
+COPY --from=prep-fayolex_ds /out/assets/ /
+
 FROM ghcr.io/natindonesia/frappe:latest-granian
 
 USER root
@@ -96,42 +140,25 @@ USER root
 # every app snapshot on top of the frappe base map baked in the runtime image
 # at /opt/defaults/assets.json. init.sh copies this manifest to the sites
 # volume on every boot (so stale volumes get refreshed), while the asset
-# FILES are served directly off the read-only app image mounts by nginx (see
-# the template below) — no copying of asset files at deploy time.
+# FILES are shipped as dedicated asset-only artifacts (see the asset-*
+# stages below) that compose image-mounts directly into the nginx
+# container's sites/assets/<app> — no copying of asset files at deploy time
+# and no nginx configuration changes.
 # =============================================================================
-COPY --from=src-erpnext /opt/frappe/apps/erpnext/assets.json /tmp/manifests/erpnext.json
-COPY --from=src-hrms /opt/frappe/apps/hrms/assets.json /tmp/manifests/hrms.json
-COPY --from=src-fayolex_extension /opt/frappe/apps/fayolex_extension/assets.json /tmp/manifests/fayolex_extension.json
-COPY --from=src-eps /opt/frappe/apps/eps/assets.json /tmp/manifests/eps.json
-COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/assets.json /tmp/manifests/fayolex_decision_science_tools.json
+COPY --from=prep-erpnext /manifests/ /tmp/manifests/erpnext/
+COPY --from=prep-hrms /manifests/ /tmp/manifests/hrms/
+COPY --from=prep-fayolex_extension /manifests/ /tmp/manifests/fayolex_extension/
+COPY --from=prep-eps /manifests/ /tmp/manifests/eps/
+COPY --from=prep-fayolex_ds /manifests/ /tmp/manifests/fayolex_decision_science_tools/
 
-# Merge every app snapshot over the frappe base manifest. Apps whose artifact
-# predates the convention carry no snapshot and are skipped.
+# Merge every app snapshot over the frappe base manifest. Backend-only apps
+# contribute an empty manifest, which is a no-op on merge.
 RUN python3 - <<'EOF'
 import glob, json
 merged = json.load(open("/opt/defaults/assets.json"))
 for path in sorted(glob.glob("/tmp/manifests/*.json")):
     merged.update(json.load(open(path)))
 json.dump(merged, open("/opt/defaults/assets.json", "w"), indent=1)
-EOF
-
-# nginx: extend the base template with per-app /assets/<app>/ locations that
-# alias straight into the read-only app image mounts, so prebuilt app assets
-# are served without ever being copied into the sites volume.
-RUN python3 - <<'EOF'
-APPS = ["erpnext", "hrms", "fayolex_extension", "eps", "fayolex_decision_science_tools"]
-pattern = "|".join(APPS)
-block = (
-    "\tlocation ~ ^/assets/(?<appname>" + pattern + ")(?<assetpath>/.*)$ {\n"
-    "\t\talias /home/frappe/frappe-bench/apps/$appname/assets$assetpath;\n"
-    "\t}\n\n"
-)
-path = "/templates/nginx/frappe.conf.template"
-template = open(path).read()
-old = "\tlocation /assets {\n\t\ttry_files $uri =404;\n\t}\n"
-assert old in template, "/assets location not found in nginx template"
-template = template.replace(old, block + old)
-open(path, "w").write(template)
 EOF
 
 USER frappe
