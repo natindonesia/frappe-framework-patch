@@ -44,58 +44,6 @@ COPY --from=src-eps /opt/frappe/apps/eps/ /
 FROM scratch AS artifact-fayolex_ds
 COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/ /
 
-# Asset-only artifacts: each carries exactly one app's prebuilt site asset
-# tree at its rootfs root so compose can image-mount it directly at
-# sites/assets/<app>, shadowing any stale copy in the shared sites volume.
-
-# Prep stages: normalize each app's optional asset payload. Backend-only
-# apps (no prebuilt assets/ or assets.json in their artifact) produce an
-# empty asset tree and an empty manifest instead of failing the build.
-FROM busybox:latest AS prep-erpnext
-COPY --from=src-erpnext /opt/frappe/apps/erpnext/ /app/
-RUN mkdir -p /out/assets /manifests \
-    && if [ -f /app/assets.json ]; then cp /app/assets.json /manifests/; fi \
-    && if [ -d /app/assets ]; then cp -a /app/assets/. /out/assets/; fi
-FROM busybox:latest AS prep-hrms
-COPY --from=src-hrms /opt/frappe/apps/hrms/ /app/
-RUN mkdir -p /out/assets /manifests \
-    && if [ -f /app/assets.json ]; then cp /app/assets.json /manifests/; fi \
-    && if [ -d /app/assets ]; then cp -a /app/assets/. /out/assets/; fi
-FROM busybox:latest AS prep-fayolex_extension
-COPY --from=src-fayolex_extension /opt/frappe/apps/fayolex_extension/ /app/
-# Un-built app: no assets.json (nothing bundled); its static asset tree is
-# the package's public/ directory, served verbatim at /assets/fayolex_extension/.
-RUN mkdir -p /out/assets /manifests \
-    && if [ -f /app/assets.json ]; then cp /app/assets.json /manifests/; fi \
-    && if [ -d /app/assets ]; then cp -a /app/assets/. /out/assets/; \
-       elif [ -d /app/fayolex_extension/public ]; then cp -a /app/fayolex_extension/public/. /out/assets/; fi
-FROM busybox:latest AS prep-eps
-COPY --from=src-eps /opt/frappe/apps/eps/ /app/
-RUN mkdir -p /out/assets /manifests \
-    && if [ -f /app/assets.json ]; then cp /app/assets.json /manifests/; fi \
-    && if [ -d /app/assets ]; then cp -a /app/assets/. /out/assets/; fi
-FROM busybox:latest AS prep-fayolex_ds
-COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/ /app/
-# Un-built backend-only app: static assets are the package public/ tree.
-RUN mkdir -p /out/assets /manifests \
-    && if [ -f /app/assets.json ]; then cp /app/assets.json /manifests/; fi \
-    && if [ -d /app/assets ]; then cp -a /app/assets/. /out/assets/; \
-       elif [ -d /app/fayolex_decision_science_tools/public ]; then cp -a /app/fayolex_decision_science_tools/public/. /out/assets/; fi
-
-# Asset-only artifacts: each carries exactly one app's prebuilt site asset
-# tree at its rootfs root so compose can image-mount it directly at
-# sites/assets/<app>, shadowing any stale copy in the shared sites volume.
-FROM scratch AS asset-erpnext
-COPY --from=prep-erpnext /out/assets/ /
-FROM scratch AS asset-hrms
-COPY --from=prep-hrms /out/assets/ /
-FROM scratch AS asset-fayolex_extension
-COPY --from=prep-fayolex_extension /out/assets/ /
-FROM scratch AS asset-eps
-COPY --from=prep-eps /out/assets/ /
-FROM scratch AS asset-fayolex_ds
-COPY --from=prep-fayolex_ds /out/assets/ /
-
 FROM ghcr.io/natindonesia/frappe:latest-granian
 
 USER root
@@ -148,19 +96,16 @@ USER root
 # every app snapshot on top of the frappe base map baked in the runtime image
 # at /opt/defaults/assets.json. init.sh copies this manifest to the sites
 # volume on every boot (so stale volumes get refreshed), while the asset
-# FILES are shipped as dedicated asset-only artifacts (see the asset-*
-# stages below) that compose image-mounts directly into the nginx
-# container's sites/assets/<app> — no copying of asset files at deploy time
-# and no nginx configuration changes.
+# FILES are copied into the sites volume once at first boot by the init
+# service (from each app image mount's assets/ or, for unbuilt apps, the
+# package's public/ directory).
 # =============================================================================
-COPY --from=prep-erpnext /manifests/ /tmp/manifests/erpnext/
-COPY --from=prep-hrms /manifests/ /tmp/manifests/hrms/
-COPY --from=prep-fayolex_extension /manifests/ /tmp/manifests/fayolex_extension/
-COPY --from=prep-eps /manifests/ /tmp/manifests/eps/
-COPY --from=prep-fayolex_ds /manifests/ /tmp/manifests/fayolex_decision_science_tools/
+COPY --from=src-erpnext /opt/frappe/apps/erpnext/assets.json /tmp/manifests/erpnext.json
+COPY --from=src-hrms /opt/frappe/apps/hrms/assets.json /tmp/manifests/hrms.json
+COPY --from=src-eps /opt/frappe/apps/eps/assets.json /tmp/manifests/eps.json
 
-# Merge every app snapshot over the frappe base manifest. Backend-only apps
-# contribute an empty manifest, which is a no-op on merge.
+# Merge every app snapshot over the frappe base manifest. The fayolex apps
+# are unbuilt (no bundles), ship no snapshot and contribute nothing.
 RUN python3 - <<'EOF'
 import glob, json
 merged = json.load(open("/opt/defaults/assets.json"))
