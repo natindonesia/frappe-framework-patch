@@ -74,30 +74,6 @@ services:
     build: { <<: *artifact-build, target: artifact-fayolex_ds }
     profiles: ["build"]
 
-  # Asset-only artifacts: compose image-mounts these into the nginx
-  # container at sites/assets/<app>, so prebuilt app assets are served
-  # without ever being copied into the shared sites volume.
-  asset-erpnext:
-    image: composed-assets/erpnext:latest
-    build: { <<: *artifact-build, target: asset-erpnext }
-    profiles: ["build"]
-  asset-hrms:
-    image: composed-assets/hrms:latest
-    build: { <<: *artifact-build, target: asset-hrms }
-    profiles: ["build"]
-  asset-fayolex_extension:
-    image: composed-assets/fayolex_extension:latest
-    build: { <<: *artifact-build, target: asset-fayolex_extension }
-    profiles: ["build"]
-  asset-eps:
-    image: composed-assets/eps:latest
-    build: { <<: *artifact-build, target: asset-eps }
-    profiles: ["build"]
-  asset-fayolex_decision_science_tools:
-    image: composed-assets/fayolex_decision_science_tools:latest
-    build: { <<: *artifact-build, target: asset-fayolex_ds }
-    profiles: ["build"]
-
   mariadb:
     image: mariadb:10.8
     command:
@@ -282,24 +258,24 @@ services:
     volumes:
       - sites-data:/home/frappe/frappe-bench/sites:ro
       - type: image
-        source: composed-assets/erpnext:latest
-        target: /home/frappe/frappe-bench/sites/assets/erpnext
+        source: composed/erpnext:latest
+        target: /home/frappe/frappe-bench/apps/erpnext
         read_only: true
       - type: image
-        source: composed-assets/hrms:latest
-        target: /home/frappe/frappe-bench/sites/assets/hrms
+        source: composed/hrms:latest
+        target: /home/frappe/frappe-bench/apps/hrms
         read_only: true
       - type: image
-        source: composed-assets/fayolex_extension:latest
-        target: /home/frappe/frappe-bench/sites/assets/fayolex_extension
+        source: composed/fayolex_extension:latest
+        target: /home/frappe/frappe-bench/apps/fayolex_extension
         read_only: true
       - type: image
-        source: composed-assets/eps:latest
-        target: /home/frappe/frappe-bench/sites/assets/eps
+        source: composed/eps:latest
+        target: /home/frappe/frappe-bench/apps/eps
         read_only: true
       - type: image
-        source: composed-assets/fayolex_decision_science_tools:latest
-        target: /home/frappe/frappe-bench/sites/assets/fayolex_decision_science_tools
+        source: composed/fayolex_decision_science_tools:latest
+        target: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
         read_only: true
     ports:
       - "${HTTP_PORT:-8085}:8080"
