@@ -132,12 +132,12 @@ services:
               mkdir -p "sites/assets/$$app"
               cp -a "apps/$$app/assets/." "sites/assets/$$app/"
             fi
-            # Merge the artifact's asset-map snapshot into the bench asset
-            # map written by init.sh (frappe's own entries dedupe on merge).
-            if [ -f "apps/$$app/assets.json" ]; then
-              python3 -c "import json, sys; app = sys.argv[1]; b = json.load(open('sites/assets/assets.json')); a = json.load(open(f'apps/{app}/assets.json')); b.update(a); json.dump(b, open('sites/assets/assets.json', 'w'), indent=1)" "$$app"
-            fi
           done
+          # Merge the prebuilt asset manifest snapshot (frappe entries +
+          # every selected app) into the bench asset map written by init.sh.
+          if [ -f /opt/frappe/composed-assets.json ]; then
+            python3 -c "import json; b = json.load(open('sites/assets/assets.json')); a = json.load(open('/opt/frappe/composed-assets.json')); b.update(a); json.dump(b, open('sites/assets/assets.json', 'w'), indent=1)"
+          fi
           touch sites/.composed-built
         fi
     environment:
