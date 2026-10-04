@@ -1,18 +1,19 @@
 # Composition experiment (experiments/frappe-oci-composition/).
-# Builds the composed runtime + per-app payload artifact images and pushes
-# them to ghcr. Runs when:
-#   1. the composition dir changes on main, or
+# Builds the composed runtime + per-app payload artifact images via
+# docker compose, boots the full stack, and smoke-tests it. Runs when:
+#   1. the composition dir (or this workflow) changes on main, or
 #   2. a base image version is published to the ghcr `frappe` package
 #      (base / latest / latest-granian) — the composition always rebuilds
 #      on top of fresh bases. Own pushes go to the `fayolex-composed`
 #      package, which is filtered out, so no trigger loop.
-name: Composition Experiment
+name: Composition Docker Compose
 
 on:
   push:
     branches: [main]
     paths:
       - 'experiments/frappe-oci-composition/**'
+      - '.github/workflows/composition.yml'
   workflow_dispatch:
   registry_package:
     types: [published]
@@ -21,39 +22,30 @@ permissions:
   contents: read
   packages: write
 
+# Push and registry_package can fire for the same logical change; collapse
+# duplicates so only the newest run builds.
+concurrency:
+  group: composition-${{ github.repository }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/${{ github.repository_owner }}/fayolex-composed
   CONTEXT: experiments/frappe-oci-composition
+  # Keep the compose project private to this run so overlapping runs on a
+  # shared host daemon can't tear down each other's containers.
+  COMPOSE_PROJECT_NAME: composition-ci-${{ github.run_id }}
 
 jobs:
   build:
+    name: Compose build, up & smoke test
     runs-on: ubuntu-latest
     if: >-
       github.event_name != 'registry_package' ||
       github.event.package.name == 'frappe'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Runtime (Dockerfile default target) — the granian-based
-          # frappe bench used by compose web/worker/schedule/socketio.
-          - target: ''
-            tag: frappe-granian
-          # Per-app payload artifacts (assets / assets.json / apps.txt),
-          # mounted read-only into the runtime by compose.
-          - target: artifact-erpnext
-            tag: erpnext
-          - target: artifact-hrms
-            tag: hrms
-          - target: artifact-fayolex_extension
-            tag: fayolex_extension
-          - target: artifact-eps
-            tag: eps
-          - target: artifact-indonesia_payroll
-            tag: indonesia_payroll
-          - target: artifact-fayolex_decision_science_tools
-            tag: fayolex_decision_science_tools
+    defaults:
+      run:
+        working-directory: experiments/frappe-oci-composition
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,13 +60,95 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push ${{ matrix.target || 'runtime' }}
-        uses: docker/build-push-action@v7
-        with:
-          context: ${{ env.CONTEXT }}
-          push: true
-          # Empty target string builds the Dockerfile's final (runtime) stage.
-          target: ${{ matrix.target }}
-          tags: ${{ env.IMAGE }}:${{ matrix.tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Pick free HTTP port
+        run: |
+          echo "HTTP_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')" >> "$GITHUB_ENV"
+
+      - name: Compose build (runtime + app artifacts)
+        run: |
+          docker compose --profile build build
+
+      - name: Compose up
+        run: |
+          docker compose up -d mariadb redis
+          echo "Running init (site creation, app install, assets)..."
+          docker compose run --rm init
+          docker compose up -d web worker worker-long worker-short schedule socketio nginx
+
+      - name: Test live API ping via nginx
+        run: |
+          SUCCESS=0
+          for i in $(seq 1 60); do
+            STATUS=$(docker compose exec -T nginx curl -s -o /dev/null -w '%{http_code}' \
+              "http://127.0.0.1:8080/api/method/ping" || true)
+            echo "Waiting for live API... (status: $STATUS, attempt $i/60)"
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ /api/method/ping returned HTTP 200 through nginx"
+              SUCCESS=1
+              break
+            fi
+            if [ $((i % 10)) -eq 1 ]; then
+              echo "--- Diagnostics (attempt $i) ---"
+              docker compose ps
+            fi
+            sleep 5
+          done
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "❌ Live API ping failed. Logs:"
+            docker compose logs web --no-color || true
+            docker compose logs init --no-color || true
+            docker compose logs nginx --no-color || true
+            exit 1
+          fi
+
+      - name: Test bench + installed apps inside running stack
+        run: |
+          docker compose run --rm --no-deps init bash -c '
+            set -e
+            cd /home/frappe/frappe-bench
+            bench --site "$SITE_NAME" list-apps
+            python -c "import frappe; print(\"frappe\", frappe.__version__)"
+          '
+
+      - name: Test assets.json integrity (every bundle serves HTTP 2xx via nginx)
+        run: |
+          # nginx mounts the same sites-data volume the init stage populated.
+          # Parses sites/assets/assets.json and asserts each bundle reference
+          # actually serves HTTP 2xx through nginx (catches missing hashed
+          # files that would 404 in production).
+          docker compose exec -T nginx python3 - <<'EOS'
+          import json, subprocess, sys, os
+          sites = "/home/frappe/frappe-bench/sites"
+          path = os.path.join(sites, "assets", "assets.json")
+          if not os.path.exists(path):
+              print("❌ sites/assets/assets.json not found in nginx container")
+              sys.exit(1)
+          manifest = json.load(open(path))
+          print(f"assets.json present in nginx with {len(manifest)} entries")
+          failed = []
+          for name, ref in manifest.items():
+              url_path = ref if isinstance(ref, str) else ref.get("path", "")
+              if not url_path:
+                  continue
+              r = subprocess.run(
+                  ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                   f"http://127.0.0.1:8080{url_path}"],
+                  capture_output=True, text=True)
+              code = r.stdout or "000"
+              if code[:1] != "2":
+                  print(f"❌ {name} -> {url_path} returned HTTP {code}")
+                  failed.append((name, url_path, code))
+              else:
+                  print(f"✅ {name} -> {url_path} (HTTP {code})")
+          if failed:
+              print("❌ assets.json integrity failed:")
+              for name, p, code in failed:
+                  print(f"  {name} ({p}) HTTP {code}")
+              sys.exit(1)
+          print(f"✅ All {len(manifest)} assets.json bundles serve HTTP 2xx through nginx")
+          EOS
+
+      - name: Cleanup compose stack
+        if: always()
+        run: |
+          docker compose down -v --remove-orphans || true
