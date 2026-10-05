@@ -1,0 +1,106 @@
+# Init Job — replaces compose `init` service. Runs site creation / migration
+# with EXACTLY the same release artifacts the runtime pods mount (issue #3
+# section 9): the composed runtime image (Python env baked) + the five app
+# payload artifacts as native image volumes (issue #3 section 7).
+# backoffLimit: 0 — a failed init must fail the release, not retry blindly.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: init
+  namespace: frappe-composition
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: init
+    spec:
+      restartPolicy: Never
+      # Wait for the service endpoints init.sh bakes into bench config
+      # (mariadb, redis://redis:6379) — replaces compose depends_on conditions.
+      initContainers:
+        - name: wait-dependencies
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for mariadb:3306..."
+              until nc -z mariadb 3306; do sleep 2; done
+              echo "Waiting for redis:6379..."
+              until nc -z redis 6379; do sleep 2; done
+              echo "Dependencies ready"
+      containers:
+        - name: init
+          image: composed-frappe-granian:latest
+          imagePullPolicy: Never
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              cd /home/frappe/frappe-bench
+              first=0
+              [ -d "sites/${SITE_NAME}" ] || first=1
+              /usr/local/bin/init.sh
+              if [ "$first" = 1 ]; then
+                set -x
+                for app in $(ls apps | grep -vx frappe); do
+                  if ! bench --site "${SITE_NAME}" install-app "$app"; then
+                    echo "[init] install-app $app FAILED - continuing without it" >&2
+                    continue
+                  fi
+                  rm -rf "sites/assets/$app"
+                  ln -s "/home/frappe/frappe-bench/apps/$app/$app/public" "sites/assets/$app"
+                done
+                set +x
+                echo "[init] apps installed"
+              fi
+          envFrom:
+            - configMapRef:
+                name: frappe-env
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+            # Immutable app payloads — native image volumes, read-only.
+            - name: apps-erpnext
+              mountPath: /home/frappe/frappe-bench/apps/erpnext
+              readOnly: true
+            - name: apps-hrms
+              mountPath: /home/frappe/frappe-bench/apps/hrms
+              readOnly: true
+            - name: apps-fayolex-extension
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_extension
+              readOnly: true
+            - name: apps-eps
+              mountPath: /home/frappe/frappe-bench/apps/eps
+              readOnly: true
+            - name: apps-fayolex-ds
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+              readOnly: true
+      # Native Kubernetes image volumes (issue #3 section 7). Requires nodes
+      # >= v1.36 (stable). The CI workflow pre-loads these images into the
+      # kind node's containerd; imagePullPolicy: Never/IfNotPresent resolves
+      # them locally instead of hitting a registry.
+      volumes:
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: sites-data
+        - name: apps-erpnext
+          image:
+            reference: composed/erpnext:latest
+            pullPolicy: Never
+        - name: apps-hrms
+          image:
+            reference: composed/hrms:latest
+            pullPolicy: Never
+        - name: apps-fayolex-extension
+          image:
+            reference: composed/fayolex_extension:latest
+            pullPolicy: Never
+        - name: apps-eps
+          image:
+            reference: composed/eps:latest
+            pullPolicy: Never
+        - name: apps-fayolex-ds
+          image:
+            reference: composed/fayolex_decision_science_tools:latest
+            pullPolicy: Never

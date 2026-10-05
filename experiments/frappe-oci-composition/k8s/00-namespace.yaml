@@ -1,0 +1,29 @@
+# =============================================================================
+# Composed Frappe deployment (issue #3 model), Kubernetes flavor.
+#
+# Consumes the SAME OCI artifacts as the Docker Compose flavor in ../
+# docker-compose (issue #3: "Docker Compose and Kubernetes consume the same
+# OCI artifacts"):
+#   - composed-frappe-granian:latest  — runtime: bench + frappe + the UNION
+#     Python environment of every selected app (immutable, baked at build)
+#   - composed/<app>:latest           — app payload artifacts, image-mounted
+#     read-only via NATIVE Kubernetes image volumes (issue #3 section 7;
+#     stable as of Kubernetes v1.36 — requires a node image >= v1.36)
+#
+# Immutable: application code, Python environment, assets (all image volumes,
+# read-only). Mutable: sites (PVC), database, Redis, logs.
+#
+# Service names (mariadb, redis, web, socketio) deliberately mirror the
+# compose service names because init.sh bakes bench config against the
+# literal hosts `mariadb` and `redis://redis:6379`.
+#
+# Apply:  kubectl apply -f 00-namespace.yaml 10-mariadb.yaml 11-redis.yaml \
+#             20-config.yaml 30-storage.yaml 31-init-job.yaml \
+#             40-runtime.yaml 50-nginx.yaml
+# (or:    kubectl apply -f .)
+# =============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: frappe-composition

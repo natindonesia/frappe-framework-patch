@@ -1,0 +1,15 @@
+# sites-data — mutable sites state. RWX because the init Job (writer) runs in
+# a different pod from web/workers/socketio (rw) and nginx (ro). Requires the
+# RWX StorageClass created by the CI workflow (nfs-server-provisioner in kind;
+# storageClassName: nfs-rwx). Locally, adjust to your cluster's RWX class.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sites-data
+  namespace: frappe-composition
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: nfs-rwx
+  resources:
+    requests:
+      storage: 5Gi

@@ -1,0 +1,77 @@
+# MariaDB — mirrors compose `mariadb` service (utf8mb4, healthcheck -> probes).
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: frappe-composition
+spec:
+  selector:
+    app: mariadb
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mariadb
+  namespace: frappe-composition
+spec:
+  serviceName: mariadb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mariadb
+  template:
+    metadata:
+      labels:
+        app: mariadb
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:10.8
+          args:
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_unicode_ci
+            - --skip-character-set-client-handshake
+            - --skip-innodb-read-only-compressed
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: frappe-env
+                  key: MYSQL_ROOT_PASSWORD
+          ports:
+            - containerPort: 3306
+              name: mysql
+          volumeMounts:
+            - name: mariadb-data
+              mountPath: /var/lib/mysql
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mariadb-admin ping -u root -p"$$MYSQL_ROOT_PASSWORD"
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mariadb-admin ping -u root -p"$$MYSQL_ROOT_PASSWORD"
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: mariadb-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 8Gi

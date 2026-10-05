@@ -1,0 +1,221 @@
+# =============================================================================
+# Composition experiment, Kubernetes flavor (experiments/frappe-oci-composition/k8s/).
+#
+# Same model as the Docker Compose workflow (composition.yml), but the
+# identical OCI artifacts are consumed by a real Kubernetes cluster instead
+# of compose (issue #3: both flavors consume the same artifacts):
+#   1. builds the composed runtime + per-app payload artifact images
+#      (same Dockerfile, same targets as the compose flavor),
+#   2. boots a kind cluster with native Kubernetes image volumes
+#      (stable in k8s v1.36 — issue #3 section 7),
+#   3. installs an RWX provisioner (nfs-server-provisioner) so the mutable
+#     sites PVC can be shared by the init Job, web/workers and nginx,
+#   4. applies the manifests, waits for the init Job (site create + app
+#      installs + migration using exactly the release artifacts), then
+#   5. smoke-tests the live stack through nginx.
+#
+# Runs when: the k8s dir (or this workflow) changes on main, a base image
+# version is published to the ghcr `frappe` package, or manually.
+# Own pushes go to the `fayolex-composed` package, which is filtered out,
+# so no trigger loop.
+# =============================================================================
+name: Composition Kubernetes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'experiments/frappe-oci-composition/k8s/**'
+      - 'experiments/frappe-oci-composition/docker-compose/Dockerfile'
+      - '.github/workflows/composition-k8s.yml'
+  workflow_dispatch:
+  registry_package:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+# Push and registry_package can fire for the same logical change; collapse
+# duplicates so only the newest run builds.
+concurrency:
+  group: composition-k8s-${{ github.repository }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  CONTEXT: experiments/frappe-oci-composition/docker-compose
+  NAMESPACE: frappe-composition
+  CLUSTER: frappe-k8s
+  # k8s >= v1.36: native image volumes are stable (issue #3 section 7).
+  NODE_IMAGE: kindest/node:v1.36.0
+
+jobs:
+  k8s:
+    name: Kind deploy, init & smoke test
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'registry_package' ||
+      github.event.package.name == 'frappe'
+    defaults:
+      run:
+        working-directory: experiments/frappe-oci-composition
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build composed runtime + app payload artifacts
+        run: |
+          docker build -t composed-frappe-granian:latest "$CONTEXT"
+          docker build --target artifact-erpnext \
+            -t composed/erpnext:latest "$CONTEXT"
+          docker build --target artifact-hrms \
+            -t composed/hrms:latest "$CONTEXT"
+          docker build --target artifact-fayolex_extension \
+            -t composed/fayolex_extension:latest "$CONTEXT"
+          docker build --target artifact-eps \
+            -t composed/eps:latest "$CONTEXT"
+          docker build --target artifact-fayolex_ds \
+            -t composed/fayolex_decision_science_tools:latest "$CONTEXT"
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ${{ env.CLUSTER }}
+          node_image: ${{ env.NODE_IMAGE }}
+          wait: 120s
+
+      - name: Load composed images into the cluster
+        run: |
+          kind load docker-image \
+            composed-frappe-granian:latest \
+            composed/erpnext:latest \
+            composed/hrms:latest \
+            composed/fayolex_extension:latest \
+            composed/eps:latest \
+            composed/fayolex_decision_science_tools:latest \
+            --name "${CLUSTER}"
+
+      - name: Install RWX storage provisioner
+        run: |
+          helm repo add nfs-ganesha-server-and-external-provisioner \
+            https://kubernetes-sigs.github.io/nfs-ganesha-server-and-external-provisioner/
+          helm install nfs-provisioner \
+            nfs-ganesha-server-and-external-provisioner/nfs-server-provisioner \
+            --set storageClass.create=true \
+            --set storageClass.name=nfs-rwx \
+            --set storageClass.archiveOnDelete=false
+          kubectl rollout status deploy/nfs-provisioner-nfs-server-provisioner \
+            --timeout=180s
+
+      - name: Apply infrastructure (namespace, db, redis, config, storage)
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml \
+                        -f k8s/10-mariadb.yaml \
+                        -f k8s/11-redis.yaml \
+                        -f k8s/20-config.yaml \
+                        -f k8s/30-storage.yaml
+          kubectl -n "$NAMESPACE" rollout status statefulset/mariadb --timeout=180s
+          kubectl -n "$NAMESPACE" rollout status deploy/redis --timeout=180s
+
+      - name: Run init job (site, app installs, migration)
+        run: |
+          kubectl apply -f k8s/31-init-job.yaml
+          # Fail fast on a failed release instead of waiting out the timeout.
+          kubectl -n "$NAMESPACE" wait job/init \
+            --for=condition=failed --timeout=5s && {
+            echo "❌ init job failed"; kubectl -n "$NAMESPACE" logs job/init || true; exit 1; } || true
+          kubectl -n "$NAMESPACE" wait job/init \
+            --for=condition=complete --timeout=25m
+          kubectl -n "$NAMESPACE" logs job/init | tail -50
+
+      - name: Apply runtime (web, workers, schedule, socketio, nginx)
+        run: |
+          kubectl apply -f k8s/40-runtime.yaml \
+                        -f k8s/50-nginx.yaml
+          for d in web worker worker-long worker-short schedule socketio nginx; do
+            kubectl -n "$NAMESPACE" rollout status "deploy/$d" --timeout=300s
+          done
+
+      - name: Test live API ping via nginx
+        run: |
+          SUCCESS=0
+          NGINX_POD=$(kubectl -n "$NAMESPACE" get pod -l app=nginx -o jsonpath='{.items[0].metadata.name}')
+          for i in $(seq 1 60); do
+            STATUS=$(kubectl -n "$NAMESPACE" exec "$NGINX_POD" -c nginx -- \
+              curl -s -o /dev/null -w '%{http_code}' \
+              "http://127.0.0.1:8080/api/method/ping" || true)
+            echo "Waiting for live API... (status: $STATUS, attempt $i/60)"
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ /api/method/ping returned HTTP 200 through nginx"
+              SUCCESS=1
+              break
+            fi
+            if [ $((i % 10)) -eq 1 ]; then
+              echo "--- Diagnostics (attempt $i) ---"
+              kubectl -n "$NAMESPACE" get pods -o wide
+            fi
+            sleep 5
+          done
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "❌ Live API ping failed. Logs:"
+            kubectl -n "$NAMESPACE" logs deploy/web --tail=100 || true
+            kubectl -n "$NAMESPACE" logs "$NGINX_POD" --tail=100 || true
+            kubectl -n "$NAMESPACE" describe pod "$NGINX_POD" || true
+            exit 1
+          fi
+
+      - name: Test bench + installed apps inside running stack
+        run: |
+          WEB_POD=$(kubectl -n "$NAMESPACE" get pod -l app=web -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n "$NAMESPACE" exec "$WEB_POD" -c web -- bash -c '
+            set -e
+            cd /home/frappe/frappe-bench
+            bench --site "${SITE_NAME:-crm.localhost}" list-apps
+            env/bin/python -c "import frappe; print(\"frappe\", frappe.__version__)"
+          '
+
+      - name: Test assets.json integrity (every bundle serves HTTP 2xx via nginx)
+        run: |
+          # nginx reads the assets map from the sites PVC (populated by the
+          # init Job from the manifest baked in the runtime image) and serves
+          # bundle files resolved through the read-only app image mounts.
+          # Parses sites/assets/assets.json and asserts each bundle reference
+          # actually serves HTTP 2xx through nginx (catches missing hashed
+          # files that would 404 in production).
+          NGINX_POD=$(kubectl -n "$NAMESPACE" get pod -l app=nginx -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n "$NAMESPACE" exec "$NGINX_POD" -c nginx -- python3 - <<'EOS'
+          import json, subprocess, sys, os
+          sites = "/home/frappe/frappe-bench/sites"
+          path = os.path.join(sites, "assets", "assets.json")
+          if not os.path.exists(path):
+              print("❌ sites/assets/assets.json not found in nginx container")
+              sys.exit(1)
+          manifest = json.load(open(path))
+          print(f"assets.json present in nginx with {len(manifest)} entries")
+          failed = []
+          for name, ref in manifest.items():
+              url_path = ref if isinstance(ref, str) else ref.get("path", "")
+              if not url_path:
+                  continue
+              r = subprocess.run(
+                  ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                   f"http://127.0.0.1:8080{url_path}"],
+                  capture_output=True, text=True)
+              code = r.stdout or "000"
+              if code[:1] != "2":
+                  print(f"❌ {name} -> {url_path} returned HTTP {code}")
+                  failed.append((name, url_path, code))
+              else:
+                  print(f"✅ {name} -> {url_path} (HTTP {code})")
+          if failed:
+              print("❌ assets.json integrity failed:")
+              for name, p, code in failed:
+                  print(f"  {name} ({p}) HTTP {code}")
+              sys.exit(1)
+          print(f"✅ All {len(manifest)} assets.json bundles serve HTTP 2xx through nginx")
+          EOS
+
+      - name: Cleanup cluster
+        if: always()
+        run: kind delete cluster --name "${CLUSTER}"

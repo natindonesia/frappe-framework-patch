@@ -1,0 +1,16 @@
+# Shared environment configuration (env vars for init Job and runtime pods).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frappe-env
+  namespace: frappe-composition
+data:
+  SITE_NAME: crm.localhost
+  MYSQL_ROOT_PASSWORD: admin
+  ADMIN_PASSWORD: admin
+  OTEL_SERVICE_NAME: frappe-app
+  # nginx entrypoint upstreams — k8s Service DNS replaces compose DNS names.
+  BACKEND: web:8000
+  SOCKETIO: socketio:9000
+  UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+  FRAPPE_SITE_NAME_HEADER: crm.localhost

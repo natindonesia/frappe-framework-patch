@@ -1,0 +1,448 @@
+# Runtime workloads — ports of compose web/worker/worker-long/worker-short/
+# schedule/socketio. Every pod mounts the same immutable set: the composed
+# runtime image (Python env baked in) + five app payload artifacts as native
+# image volumes + the mutable sites PVC (issue #3 filesystem model).
+# Deployment-level init ordering: `kubectl wait job/init` in CI (or rollout
+# gating) replaces compose depends_on: service_completed_successfully.
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: frappe-composition
+spec:
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: socketio
+  namespace: frappe-composition
+spec:
+  selector:
+    app: socketio
+  ports:
+    - name: socketio
+      port: 9000
+      targetPort: 9000
+---
+# Compose web: granian WSGI, 2 replicas.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: frappe-composition
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: composed-frappe-granian:latest
+          imagePullPolicy: Never
+          command: ["/bin/bash", "-c"]
+          args:
+            - 'cd /home/frappe/frappe-bench/sites && . ../env/bin/activate && exec granian --interface wsgi --host 0.0.0.0 --port 8000 --workers 2 --blocking-threads 4 frappe.otel_wsgi:application'
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: frappe-app
+          ports:
+            - containerPort: 8000
+              name: http
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+            - name: apps-erpnext
+              mountPath: /home/frappe/frappe-bench/apps/erpnext
+              readOnly: true
+            - name: apps-hrms
+              mountPath: /home/frappe/frappe-bench/apps/hrms
+              readOnly: true
+            - name: apps-fayolex-extension
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_extension
+              readOnly: true
+            - name: apps-eps
+              mountPath: /home/frappe/frappe-bench/apps/eps
+              readOnly: true
+            - name: apps-fayolex-ds
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+              readOnly: true
+      volumes:
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: sites-data
+        - name: apps-erpnext
+          image:
+            reference: composed/erpnext:latest
+            pullPolicy: Never
+        - name: apps-hrms
+          image:
+            reference: composed/hrms:latest
+            pullPolicy: Never
+        - name: apps-fayolex-extension
+          image:
+            reference: composed/fayolex_extension:latest
+            pullPolicy: Never
+        - name: apps-eps
+          image:
+            reference: composed/eps:latest
+            pullPolicy: Never
+        - name: apps-fayolex-ds
+          image:
+            reference: composed/fayolex_decision_science_tools:latest
+            pullPolicy: Never
+---
+# Compose worker: default queue, 2 replicas.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: frappe-composition
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: composed-frappe-granian:latest
+          imagePullPolicy: Never
+          command: ["/bin/bash", "-c"]
+          args:
+            - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench worker'
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: frappe-worker-default
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+            - name: apps-erpnext
+              mountPath: /home/frappe/frappe-bench/apps/erpnext
+              readOnly: true
+            - name: apps-hrms
+              mountPath: /home/frappe/frappe-bench/apps/hrms
+              readOnly: true
+            - name: apps-fayolex-extension
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_extension
+              readOnly: true
+            - name: apps-eps
+              mountPath: /home/frappe/frappe-bench/apps/eps
+              readOnly: true
+            - name: apps-fayolex-ds
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+              readOnly: true
+      volumes:
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: sites-data
+        - name: apps-erpnext
+          image:
+            reference: composed/erpnext:latest
+            pullPolicy: Never
+        - name: apps-hrms
+          image:
+            reference: composed/hrms:latest
+            pullPolicy: Never
+        - name: apps-fayolex-extension
+          image:
+            reference: composed/fayolex_extension:latest
+            pullPolicy: Never
+        - name: apps-eps
+          image:
+            reference: composed/eps:latest
+            pullPolicy: Never
+        - name: apps-fayolex-ds
+          image:
+            reference: composed/fayolex_decision_science_tools:latest
+            pullPolicy: Never
+---
+# Compose worker-long: long queue, 1 replica.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-long
+  namespace: frappe-composition
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker-long
+  template:
+    metadata:
+      labels:
+        app: worker-long
+    spec:
+      containers:
+        - name: worker-long
+          image: composed-frappe-granian:latest
+          imagePullPolicy: Never
+          command: ["/bin/bash", "-c"]
+          args:
+            - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench worker --queue long'
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: frappe-worker-long
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+            - name: apps-erpnext
+              mountPath: /home/frappe/frappe-bench/apps/erpnext
+              readOnly: true
+            - name: apps-hrms
+              mountPath: /home/frappe/frappe-bench/apps/hrms
+              readOnly: true
+            - name: apps-fayolex-extension
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_extension
+              readOnly: true
+            - name: apps-eps
+              mountPath: /home/frappe/frappe-bench/apps/eps
+              readOnly: true
+            - name: apps-fayolex-ds
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+              readOnly: true
+      volumes:
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: sites-data
+        - name: apps-erpnext
+          image:
+            reference: composed/erpnext:latest
+            pullPolicy: Never
+        - name: apps-hrms
+          image:
+            reference: composed/hrms:latest
+            pullPolicy: Never
+        - name: apps-fayolex-extension
+          image:
+            reference: composed/fayolex_extension:latest
+            pullPolicy: Never
+        - name: apps-eps
+          image:
+            reference: composed/eps:latest
+            pullPolicy: Never
+        - name: apps-fayolex-ds
+          image:
+            reference: composed/fayolex_decision_science_tools:latest
+            pullPolicy: Never
+---
+# Compose worker-short: short queue, 2 replicas.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-short
+  namespace: frappe-composition
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: worker-short
+  template:
+    metadata:
+      labels:
+        app: worker-short
+    spec:
+      containers:
+        - name: worker-short
+          image: composed-frappe-granian:latest
+          imagePullPolicy: Never
+          command: ["/bin/bash", "-c"]
+          args:
+            - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench worker --queue short'
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: frappe-worker-short
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+            - name: apps-erpnext
+              mountPath: /home/frappe/frappe-bench/apps/erpnext
+              readOnly: true
+            - name: apps-hrms
+              mountPath: /home/frappe/frappe-bench/apps/hrms
+              readOnly: true
+            - name: apps-fayolex-extension
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_extension
+              readOnly: true
+            - name: apps-eps
+              mountPath: /home/frappe/frappe-bench/apps/eps
+              readOnly: true
+            - name: apps-fayolex-ds
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+              readOnly: true
+      volumes:
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: sites-data
+        - name: apps-erpnext
+          image:
+            reference: composed/erpnext:latest
+            pullPolicy: Never
+        - name: apps-hrms
+          image:
+            reference: composed/hrms:latest
+            pullPolicy: Never
+        - name: apps-fayolex-extension
+          image:
+            reference: composed/fayolex_extension:latest
+            pullPolicy: Never
+        - name: apps-eps
+          image:
+            reference: composed/eps:latest
+            pullPolicy: Never
+        - name: apps-fayolex-ds
+          image:
+            reference: composed/fayolex_decision_science_tools:latest
+            pullPolicy: Never
+---
+# Compose schedule: 1 replica.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schedule
+  namespace: frappe-composition
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: schedule
+  template:
+    metadata:
+      labels:
+        app: schedule
+    spec:
+      containers:
+        - name: schedule
+          image: composed-frappe-granian:latest
+          imagePullPolicy: Never
+          command: ["/bin/bash", "-c"]
+          args:
+            - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec bench schedule'
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: frappe-scheduler
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+            - name: apps-erpnext
+              mountPath: /home/frappe/frappe-bench/apps/erpnext
+              readOnly: true
+            - name: apps-hrms
+              mountPath: /home/frappe/frappe-bench/apps/hrms
+              readOnly: true
+            - name: apps-fayolex-extension
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_extension
+              readOnly: true
+            - name: apps-eps
+              mountPath: /home/frappe/frappe-bench/apps/eps
+              readOnly: true
+            - name: apps-fayolex-ds
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+              readOnly: true
+      volumes:
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: sites-data
+        - name: apps-erpnext
+          image:
+            reference: composed/erpnext:latest
+            pullPolicy: Never
+        - name: apps-hrms
+          image:
+            reference: composed/hrms:latest
+            pullPolicy: Never
+        - name: apps-fayolex-extension
+          image:
+            reference: composed/fayolex_extension:latest
+            pullPolicy: Never
+        - name: apps-eps
+          image:
+            reference: composed/eps:latest
+            pullPolicy: Never
+        - name: apps-fayolex-ds
+          image:
+            reference: composed/fayolex_decision_science_tools:latest
+            pullPolicy: Never
+---
+# Compose socketio: 1 replica.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: socketio
+  namespace: frappe-composition
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: socketio
+  template:
+    metadata:
+      labels:
+        app: socketio
+    spec:
+      containers:
+        - name: socketio
+          image: composed-frappe-granian:latest
+          imagePullPolicy: Never
+          command: ["/bin/bash", "-c"]
+          args:
+            - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec node apps/frappe/socketio.js'
+          ports:
+            - containerPort: 9000
+              name: socketio
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+            - name: apps-erpnext
+              mountPath: /home/frappe/frappe-bench/apps/erpnext
+              readOnly: true
+            - name: apps-hrms
+              mountPath: /home/frappe/frappe-bench/apps/hrms
+              readOnly: true
+            - name: apps-fayolex-extension
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_extension
+              readOnly: true
+            - name: apps-eps
+              mountPath: /home/frappe/frappe-bench/apps/eps
+              readOnly: true
+            - name: apps-fayolex-ds
+              mountPath: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+              readOnly: true
+      volumes:
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: sites-data
+        - name: apps-erpnext
+          image:
+            reference: composed/erpnext:latest
+            pullPolicy: Never
+        - name: apps-hrms
+          image:
+            reference: composed/hrms:latest
+            pullPolicy: Never
+        - name: apps-fayolex-extension
+          image:
+            reference: composed/fayolex_extension:latest
+            pullPolicy: Never
+        - name: apps-eps
+          image:
+            reference: composed/eps:latest
+            pullPolicy: Never
+        - name: apps-fayolex-ds
+          image:
+            reference: composed/fayolex_decision_science_tools:latest
+            pullPolicy: Never
