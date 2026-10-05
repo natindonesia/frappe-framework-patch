@@ -49,7 +49,7 @@ env:
   NAMESPACE: frappe-composition
   CLUSTER: frappe-k8s
   # k8s >= v1.36: native image volumes are stable (issue #3 section 7).
-  NODE_IMAGE: kindest/node:v1.36.0
+  NODE_IMAGE: kindest/node:v1.36.4
 
 jobs:
   k8s:
