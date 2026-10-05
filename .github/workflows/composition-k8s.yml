@@ -89,6 +89,7 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@v1
         with:
+          version: v0.33.0
           cluster_name: ${{ env.CLUSTER }}
           node_image: ${{ env.NODE_IMAGE }}
           wait: 120s
