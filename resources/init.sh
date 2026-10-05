@@ -46,9 +46,16 @@ else
 fi
 
 
-# Restore baked assets.json onto the shared sites volume (overrides stale copy)
+# Seed baked assets.json onto the shared sites volume. Skipped when the
+# destination is read-only (e.g. the composed deployment image-mounts the
+# manifest over sites/assets/assets.json directly, and init runs with the
+# same read-only mount).
 if [ -f "/opt/defaults/assets.json" ]; then
   mkdir -p sites/assets
-  cp /opt/defaults/assets.json sites/assets/assets.json
+  if [ -w sites/assets ]; then
+    cp /opt/defaults/assets.json sites/assets/assets.json
+  else
+    echo "[init] sites/assets read-only - skipping baked assets.json copy"
+  fi
 fi
 

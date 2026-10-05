@@ -37,13 +37,12 @@ x-frappe-volumes: &frappe-volumes
     target: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
     read_only: true
 
-# Runtime services read the merged asset map directly from the baked manifest
-# (/opt/defaults/assets.json) instead of relying on init.sh's copy into the
-# sites volume: the manifest is image-mounted read-only over
-# sites/assets/assets.json, exactly where frappe reads it
+# Runtime services — init included — read the merged asset map directly from
+# the baked manifest (/opt/defaults/assets.json): the manifest is image-mounted
+# read-only over sites/assets/assets.json, exactly where frappe reads it
 # (frappe/frappe/utils/__init__.py: get_asset_map / read_file("assets/assets.json")).
-# init (below) deliberately does NOT get this mount — it keeps write access so
-# init.sh can still seed the volume copy for consumers without the mount.
+# Nothing ever writes the manifest; init.sh detects the read-only destination
+# and skips its seeding copy.
 x-frappe-volumes-runtime: &frappe-volumes-runtime
   - sites-data:/home/frappe/frappe-bench/sites
   - type: image
@@ -146,9 +145,11 @@ services:
     # restarts, migrates using exactly this release's artifacts (issue #3
     # section 9). On first boot we additionally install every selected app.
     # Asset stitching is NOT done here: the merged asset map ships baked in
-    # the runtime image (/opt/defaults/assets.json, copied to the sites
-    # volume by init.sh) and nginx serves app asset files straight from the
-    # read-only app image mounts.
+    # the runtime image (/opt/defaults/assets.json) and is image-mounted
+    # read-only over sites/assets/assets.json on every service, including
+    # this one; init.sh skips its seeding copy on the read-only destination.
+    # nginx serves app asset files straight from the read-only app image
+    # mounts.
     command:
       - -c
       - |
@@ -180,7 +181,7 @@ services:
       SITE_NAME: ${SITE_NAME:-crm.localhost}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
-    volumes: *frappe-volumes
+    volumes: *frappe-volumes-runtime
     depends_on:
       mariadb:
         condition: service_healthy
