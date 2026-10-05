@@ -44,7 +44,8 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  CONTEXT: experiments/frappe-oci-composition/docker-compose
+  # Relative to the job's working-directory (experiments/frappe-oci-composition).
+  CONTEXT: docker-compose
   NAMESPACE: frappe-composition
   CLUSTER: frappe-k8s
   # k8s >= v1.36: native image volumes are stable (issue #3 section 7).
