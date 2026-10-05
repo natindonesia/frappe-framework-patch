@@ -114,8 +114,11 @@ jobs:
             --set storageClass.create=true \
             --set storageClass.name=nfs-rwx \
             --set storageClass.archiveOnDelete=false
-          kubectl rollout status deploy/nfs-provisioner-nfs-server-provisioner \
-            --timeout=180s
+          # The chart ships a StatefulSet; wait for it by label, then confirm
+          # the StorageClass is registered.
+          kubectl -n default wait --for=jsonpath='{.status.readyReplicas}'=1 \
+            statefulset -l app.kubernetes.io/name=nfs-server-provisioner --timeout=180s
+          kubectl get storageclass nfs-rwx
 
       - name: Apply infrastructure (namespace, db, redis, config, storage)
         run: |
