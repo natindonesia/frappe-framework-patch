@@ -37,6 +37,42 @@ x-frappe-volumes: &frappe-volumes
     target: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
     read_only: true
 
+# Runtime services read the merged asset map directly from the baked manifest
+# (/opt/defaults/assets.json) instead of relying on init.sh's copy into the
+# sites volume: the manifest is image-mounted read-only over
+# sites/assets/assets.json, exactly where frappe reads it
+# (frappe/frappe/utils/__init__.py: get_asset_map / read_file("assets/assets.json")).
+# init (below) deliberately does NOT get this mount — it keeps write access so
+# init.sh can still seed the volume copy for consumers without the mount.
+x-frappe-volumes-runtime: &frappe-volumes-runtime
+  - sites-data:/home/frappe/frappe-bench/sites
+  - type: image
+    source: composed/erpnext:latest
+    target: /home/frappe/frappe-bench/apps/erpnext
+    read_only: true
+  - type: image
+    source: composed/hrms:latest
+    target: /home/frappe/frappe-bench/apps/hrms
+    read_only: true
+  - type: image
+    source: composed/fayolex_extension:latest
+    target: /home/frappe/frappe-bench/apps/fayolex_extension
+    read_only: true
+  - type: image
+    source: composed/eps:latest
+    target: /home/frappe/frappe-bench/apps/eps
+    read_only: true
+  - type: image
+    source: composed/fayolex_decision_science_tools:latest
+    target: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
+    read_only: true
+  - type: image
+    source: composed-frappe-granian:latest
+    target: /home/frappe/frappe-bench/sites/assets/assets.json
+    read_only: true
+    image:
+      subpath: opt/defaults/assets.json
+
 x-frappe-build: &frappe-build
   context: .
   dockerfile: Dockerfile
@@ -144,7 +180,7 @@ services:
       SITE_NAME: ${SITE_NAME:-crm.localhost}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
-    volumes: *frappe-volumes
+    volumes: *frappe-volumes-runtime
     depends_on:
       mariadb:
         condition: service_healthy
@@ -160,7 +196,7 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: frappe-app
-    volumes: *frappe-volumes
+    volumes: *frappe-volumes-runtime
     restart: unless-stopped
     deploy:
       replicas: 2
@@ -177,7 +213,7 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: frappe-worker-default
-    volumes: *frappe-volumes
+    volumes: *frappe-volumes-runtime
     restart: unless-stopped
     deploy:
       replicas: 2
@@ -194,7 +230,7 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: frappe-worker-long
-    volumes: *frappe-volumes
+    volumes: *frappe-volumes-runtime
     restart: unless-stopped
     deploy:
       replicas: 1
@@ -211,7 +247,7 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: frappe-worker-short
-    volumes: *frappe-volumes
+    volumes: *frappe-volumes-runtime
     restart: unless-stopped
     deploy:
       replicas: 2
@@ -228,7 +264,7 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: frappe-scheduler
-    volumes: *frappe-volumes
+    volumes: *frappe-volumes-runtime
     restart: unless-stopped
     depends_on:
       init:
@@ -240,7 +276,7 @@ services:
     command:
       - -c
       - 'cd /home/frappe/frappe-bench && . env/bin/activate && exec node apps/frappe/socketio.js'
-    volumes: *frappe-volumes
+    volumes: *frappe-volumes-runtime
     restart: unless-stopped
     depends_on:
       init:
