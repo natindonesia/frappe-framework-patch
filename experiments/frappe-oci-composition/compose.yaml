@@ -180,7 +180,7 @@ services:
       SITE_NAME: ${SITE_NAME:-crm.localhost}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
-    volumes: *frappe-volumes-runtime
+    volumes: *frappe-volumes
     depends_on:
       mariadb:
         condition: service_healthy
