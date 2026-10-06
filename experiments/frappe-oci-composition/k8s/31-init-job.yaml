@@ -43,6 +43,13 @@ spec:
               /usr/local/bin/init.sh
               if [ "$first" = 1 ]; then
                 set -x
+                # Unlike a fresh docker named volume, a fresh PVC does NOT
+                # self-seed from the image's sites/ content - so the frappe
+                # assets symlink that the base image bakes in must be
+                # recreated here. nginx resolves it through the runtime
+                # image's own apps/frappe tree.
+                rm -rf sites/assets/frappe
+                ln -s "/home/frappe/frappe-bench/apps/frappe/frappe/public" "sites/assets/frappe"
                 for app in $(ls apps | grep -vx frappe); do
                   if ! bench --site "${SITE_NAME}" install-app "$app"; then
                     echo "[init] install-app $app FAILED - continuing without it" >&2
