@@ -125,6 +125,17 @@ jobs:
               sys.exit(1)
           manifest = json.load(open(path))
           print(f"assets.json present in nginx with {len(manifest)} entries")
+          # The composition must actually ship bundles for every selected
+          # app; a manifest missing an app's bundles would catch neither
+          # 404s nor an empty merge below.
+          apps_seen = {p.split("/")[2] for p in manifest.values()
+                       if isinstance(p, str) and p.startswith("/assets/")}
+          required = {"frappe", "erpnext", "hrms", "eps"}
+          missing = required - apps_seen
+          if missing:
+              print(f"❌ assets.json missing bundles for apps: {sorted(missing)}")
+              sys.exit(1)
+          print(f"✅ manifest covers required apps: {sorted(required & apps_seen)}")
           failed = []
           for name, ref in manifest.items():
               url_path = ref if isinstance(ref, str) else ref.get("path", "")
