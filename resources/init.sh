@@ -52,10 +52,11 @@ fi
 # same read-only mount).
 if [ -f "/opt/defaults/assets.json" ]; then
   mkdir -p sites/assets
-  if [ -w sites/assets ]; then
-    cp /opt/defaults/assets.json sites/assets/assets.json
+  dest=sites/assets/assets.json
+  if [ -w "$dest" ] || { [ ! -e "$dest" ] && [ -w sites/assets ]; }; then
+    cp /opt/defaults/assets.json "$dest"
   else
-    echo "[init] sites/assets read-only - skipping baked assets.json copy"
+    echo "[init] $dest is read-only - skipping baked assets.json copy"
   fi
 fi
 
