@@ -294,6 +294,15 @@ services:
       FRAPPE_SITE_NAME_HEADER: ${SITE_NAME:-crm.localhost}
     volumes:
       - sites-data:/home/frappe/frappe-bench/sites:ro
+      # Serve the MERGED manifest (frappe base + every app snapshot), not the
+      # stale frappe-only copy the named volume self-seeded from the base
+      # image. Same mount the other runtime services use.
+      - type: image
+        source: composed-frappe-granian:latest
+        target: /home/frappe/frappe-bench/sites/assets/assets.json
+        read_only: true
+        image:
+          subpath: opt/defaults/assets.json
       - type: image
         source: composed/erpnext:latest
         target: /home/frappe/frappe-bench/sites/assets/erpnext
