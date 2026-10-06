@@ -55,8 +55,15 @@ spec:
                     echo "[init] install-app $app FAILED - continuing without it" >&2
                     continue
                   fi
-                  rm -rf "sites/assets/$app"
+                rm -rf "sites/assets/$app"
+                # Standalone artifacts ship prebuilt assets as a top-level
+                # assets/ dir (what compose image-mounts via subpath); fall
+                # back to the package's public/ tree for unbuilt apps.
+                if [ -d "apps/$app/assets" ]; then
+                  ln -s "/home/frappe/frappe-bench/apps/$app/assets" "sites/assets/$app"
+                else
                   ln -s "/home/frappe/frappe-bench/apps/$app/$app/public" "sites/assets/$app"
+                fi
                 done
                 set +x
                 echo "[init] apps installed"
