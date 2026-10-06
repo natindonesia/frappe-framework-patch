@@ -196,7 +196,7 @@ jobs:
           # actually serves HTTP 2xx through nginx (catches missing hashed
           # files that would 404 in production).
           NGINX_POD=$(kubectl -n "$NAMESPACE" get pod -l app=nginx -o jsonpath='{.items[0].metadata.name}')
-          kubectl -n "$NAMESPACE" exec "$NGINX_POD" -c nginx -- python3 - <<'EOS'
+          kubectl -n "$NAMESPACE" exec -i "$NGINX_POD" -c nginx -- python3 - <<'EOS'
           import json, subprocess, sys, os
           sites = "/home/frappe/frappe-bench/sites"
           path = os.path.join(sites, "assets", "assets.json")
