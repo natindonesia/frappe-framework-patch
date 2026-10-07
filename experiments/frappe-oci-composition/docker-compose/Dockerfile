@@ -44,6 +44,115 @@ COPY --from=src-eps /opt/frappe/apps/eps/ /
 FROM scratch AS artifact-fayolex_ds
 COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/ /
 
+# =============================================================================
+# Generic single-app variant (ARG-driven, reusable by app repositories).
+# Builds the same stages as above for ONE app passed via build args:
+#   APP           app name, e.g. erpnext
+#   APP_ARTIFACT  artifact image ref carrying /opt/frappe/apps/<app>/
+#                 (e.g. ghcr.io/natindonesia/erpnext:latest-standalone)
+# Stages: src -> artifact (/opt layout) / payload (rootfs) / runtime-single.
+# The multi-app stages above and the default target below are untouched, so
+# the full composition keeps building exactly as before.
+# =============================================================================
+ARG APP
+ARG APP_ARTIFACT
+
+FROM ${APP_ARTIFACT} AS src
+ARG APP
+
+FROM scratch AS artifact
+COPY --from=src /opt/frappe/apps/${APP}/ /opt/frappe/apps/${APP}/
+
+FROM scratch AS payload
+COPY --from=src /opt/frappe/apps/${APP}/ /
+
+FROM ghcr.io/natindonesia/frappe:latest-granian AS runtime-single
+ARG APP
+
+USER root
+
+# uv replaces pip for installing the composition's dependencies.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/
+
+COPY --from=src /opt/frappe/apps/${APP}/pyproject.toml /deps/${APP}/pyproject.toml
+
+# Union of every selected app's [project].dependencies -> one uv resolution
+# into the bench venv (frappe's own dependencies are already satisfied there).
+RUN python3 - <<'EOF'
+import glob, tomllib
+with open("/deps/requirements.txt", "w") as out:
+    for path in sorted(glob.glob("/deps/*/pyproject.toml")):
+        for dep in tomllib.load(open(path, "rb"))["project"].get("dependencies", []):
+            out.write(dep + "\n")
+EOF
+
+# Install the union into the bench venv (uv only adds what is missing,
+# keeping the base runtime's own resolution intact).
+ENV VIRTUAL_ENV=/home/frappe/frappe-bench/env
+RUN uv pip install --no-cache-dir -r /deps/requirements.txt
+
+# Expose the image-mounted apps to the interpreter, derived from the /deps
+# tree (one entry per selected app — no hardcoded app list here).
+RUN python3 - <<'EOF'
+import glob
+paths = sorted(glob.glob("/deps/*/pyproject.toml"))
+with open("/home/frappe/frappe-bench/env/lib/python3.14/site-packages/composed-apps.pth", "w") as out:
+    for path in paths:
+        out.write("/home/frappe/frappe-bench/apps/" + path.split("/")[2] + "\n")
+EOF
+
+RUN mkdir -p /home/frappe/frappe-bench/logs /home/frappe/logs \
+    && chown frappe:frappe /home/frappe/frappe-bench/logs /home/frappe/logs
+
+# Asset stitching (issue #3): the composition never builds assets. The app
+# artifact ships its own prebuilt assets/ plus an asset-map snapshot
+# (assets.json); here we merge that snapshot on top of the frappe base map
+# baked in the runtime image at /opt/defaults/assets.json. Requires the
+# artifact to carry assets.json (true for every app that builds assets).
+COPY --from=src /opt/frappe/apps/${APP}/assets.json /tmp/manifests/${APP}.json
+
+RUN python3 - <<'EOF'
+import glob, json
+merged = json.load(open("/opt/defaults/assets.json"))
+for path in sorted(glob.glob("/tmp/manifests/*.json")):
+    merged.update(json.load(open(path)))
+json.dump(merged, open("/opt/defaults/assets.json", "w"), indent=1)
+
+# The frappe base manifest can drift from the dist tree actually baked in the
+# runtime image (rebuilt bundles change their content hash while the baked
+# snapshot keeps the old one). Reconcile: any frappe entry whose target file
+# is missing is re-pointed at the real hashed file of the same bundle in the
+# image's dist tree. App snapshots are authoritative and left untouched.
+import glob, json, os
+merged = json.load(open("/opt/defaults/assets.json"))
+frappe_root = "/home/frappe/frappe-bench/apps/frappe/frappe/public/dist"
+changed = 0
+for key, val in list(merged.items()):
+    if not val.startswith("/assets/frappe/dist/"):
+        continue
+    rel = val[len("/assets/frappe/"):]
+    if os.path.exists(f"/home/frappe/frappe-bench/apps/frappe/frappe/public/{rel}"):
+        continue
+    stem, ext = key.rsplit(".", 1)
+    candidates = [
+        p for p in glob.glob(f"{frappe_root}/{ext}/{stem}.*.{ext}")
+        if not p.endswith(".map")
+    ]
+    if len(candidates) == 1:
+        merged[key] = "/assets/frappe/dist/%s/%s" % (
+            ext, os.path.basename(candidates[0]))
+        changed += 1
+    elif not candidates:
+        raise SystemExit(f"bundle {key}: no built file in dist, refusing to ship")
+    else:
+        raise SystemExit(f"bundle {key}: ambiguous dist candidates {candidates}")
+json.dump(merged, open("/opt/defaults/assets.json", "w"), indent=1)
+print(f"reconciled {changed} stale frappe bundle hashes")
+EOF
+
+USER frappe
+WORKDIR /home/frappe/frappe-bench
+
 FROM ghcr.io/natindonesia/frappe:latest-granian
 
 USER root
