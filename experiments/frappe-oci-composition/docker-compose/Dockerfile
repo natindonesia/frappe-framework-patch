@@ -1,4 +1,9 @@
 # syntax=docker/dockerfile:1
+# ARGs here so they are in scope for FROM expansion (mid-file ARGs are not).
+# The defaults keep the multi-app targets parseable; generic single-app
+# stages only get built when explicitly targeted.
+ARG APP
+ARG APP_ARTIFACT=ghcr.io/natindonesia/erpnext:latest-standalone
 # =============================================================================
 # Composed Frappe runtime (issue #3 model).
 #
