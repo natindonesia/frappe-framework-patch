@@ -55,7 +55,7 @@ COPY --from=src-fayolex_ds /opt/frappe/apps/fayolex_decision_science_tools/ /
 # the full composition keeps building exactly as before.
 # =============================================================================
 ARG APP
-ARG APP_ARTIFACT
+ARG APP_ARTIFACT=ghcr.io/natindonesia/erpnext:latest-standalone
 
 FROM ${APP_ARTIFACT} AS src
 ARG APP
