@@ -4,6 +4,14 @@
 # stages only get built when explicitly targeted.
 ARG APP
 ARG APP_ARTIFACT=ghcr.io/natindonesia/erpnext:latest-standalone
+# Per-app artifact sources for the multi-app composition. Overridable so a
+# CI run can inject its own ref's artifact via a local image tag (docker
+# build resolves FROM against the local daemon before pulling).
+ARG ERPNEXT_ARTIFACT=ghcr.io/natindonesia/erpnext:latest-standalone
+ARG HRMS_ARTIFACT=ghcr.io/natindonesia/hrms:latest-standalone
+ARG FAYOLEX_EXTENSION_ARTIFACT=ghcr.io/natindonesia/fayolex_extension:latest-standalone
+ARG EPS_ARTIFACT=ghcr.io/natindonesia/eps:latest-standalone
+ARG FAYOLEX_DS_ARTIFACT=ghcr.io/natindonesia/fayolex_decision_science_tools:latest-standalone
 # =============================================================================
 # Composed Frappe runtime (issue #3 model).
 #
@@ -26,11 +34,11 @@ ARG APP_ARTIFACT=ghcr.io/natindonesia/erpnext:latest-standalone
 # carries the app payload plus its OWN prebuilt assets (assets/, assets.json,
 # apps.txt), built once in the app's own repo and baked into the artifact.
 # No asset building happens here — this image only stitches.
-FROM ghcr.io/natindonesia/erpnext:latest-standalone AS src-erpnext
-FROM ghcr.io/natindonesia/hrms:latest-standalone AS src-hrms
-FROM ghcr.io/natindonesia/fayolex_extension:latest-standalone AS src-fayolex_extension
-FROM ghcr.io/natindonesia/eps:latest-standalone AS src-eps
-FROM ghcr.io/natindonesia/fayolex_decision_science_tools:latest-standalone AS src-fayolex_ds
+FROM ${ERPNEXT_ARTIFACT} AS src-erpnext
+FROM ${HRMS_ARTIFACT} AS src-hrms
+FROM ${FAYOLEX_EXTENSION_ARTIFACT} AS src-fayolex_extension
+FROM ${EPS_ARTIFACT} AS src-eps
+FROM ${FAYOLEX_DS_ARTIFACT} AS src-fayolex_ds
 
 # =============================================================================
 # Conforming app payload artifacts (issue #3 section 1): payload at the image
