@@ -180,6 +180,7 @@ RUN apt-get update \
 # builder-patched, layered on top of this stage).
 # =============================================================================
 FROM build AS builder-base
+ARG NODE_VERSION
 
 # --- Sub-layer 1: pristine source snapshot. --------------------------------
 # Copy ONLY the pinned ./frappe tree and commit it. Isolating the frappe COPY
@@ -205,7 +206,7 @@ RUN rm -f /tmp/frappe/.git \
 # .git dirs are stripped in the deploy stages so neither final image ships
 # repo metadata.
 RUN su - frappe -c 'git config --global --add safe.directory "*"' \
-    && su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:$PATH && bench init \
+    && su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v${NODE_VERSION}/bin:$PATH && bench init \
       --frappe-path=/tmp/frappe \
       --no-procfile \
       --no-backups \
@@ -262,15 +263,16 @@ RUN su - frappe -c 'cd /home/frappe/frappe-bench/apps/frappe \
 # Python deps were installed pre-patch — a patch must never add a dependency.
 # =============================================================================
 FROM builder-base AS builder-patched
+ARG NODE_VERSION
 
 COPY --chown=frappe:frappe patches/ /tmp/patches/
 COPY --chown=frappe:frappe scripts/ /tmp/scripts/
 
-RUN su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:$PATH \
+RUN su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v${NODE_VERSION}/bin:$PATH \
       && export SUBMODULE=/home/frappe/frappe-bench/apps/frappe \
       && export PATCHES_DIR=/tmp/patches \
       && /tmp/scripts/apply-patches.sh' \
-    && su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v24.13.0/bin:$PATH \
+    && su - frappe -c 'export PATH=/home/frappe/.nvm/versions/node/v${NODE_VERSION}/bin:$PATH \
       && cd /home/frappe/frappe-bench && bench build --app frappe' \
     && rm -rf /tmp/patches /tmp/scripts
 
