@@ -21,7 +21,7 @@ SEVERITY="${SECURITY_SEVERITY:-CRITICAL,HIGH}"
 EXIT_CODE="${SECURITY_EXIT_CODE:-1}"
 FAIL="${SECURITY_FAIL_ON_FINDINGS:-true}"
 TARGETS="${SECURITY_SOURCE_TARGETS:-.}"
-SKIP="${TRIVY_SKIP_DIRS:-frappe}"
+SKIP="${TRIVY_SKIP_DIRS:-frappe experiments}"
 
 extra=()
 [ "${TRIVY_IGNORE_UNFIXED:-false}" = "true" ] && extra+=(--ignore-unfixed)

@@ -38,7 +38,6 @@ RUN useradd -ms /bin/bash frappe \
     && apt-get install --no-install-recommends -y \
         curl \
         git \
-        vim \
         gettext-base \
         file \
         # weasyprint dependencies
