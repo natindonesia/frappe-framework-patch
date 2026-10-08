@@ -93,14 +93,16 @@ RUN mkdir -p ${NVM_DIR} \
     && . ${NVM_DIR}/nvm.sh \
     && nvm install ${NODE_VERSION} \
     && nvm use v${NODE_VERSION} \
-    && npm install -g npm@latest yarn \
+    && npm install -g npm@latest \
+    && npm install -g yarn \
     && corepack enable pnpm \
     && nvm alias default v${NODE_VERSION} \
     && rm -rf ${NVM_DIR}/.cache \
     && echo 'export NVM_DIR="/home/frappe/.nvm"' >> /home/frappe/.bashrc \
     && echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm' >> /home/frappe/.bashrc \
     && echo '[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion' >> /home/frappe/.bashrc \
-    && echo 'export PATH="${NVM_DIR}/versions/node/v'${NODE_VERSION}'/bin:${PATH}"' >> /home/frappe/.profile
+    && echo 'export NVM_DIR="/home/frappe/.nvm"' >> /home/frappe/.profile \
+    && echo 'export PATH="/home/frappe/.nvm/versions/node/v'${NODE_VERSION}'/bin:${PATH}"' >> /home/frappe/.profile
 
 # =============================================================================
 # Layer 3 — wkhtmltopdf + chromium-headless-shell
