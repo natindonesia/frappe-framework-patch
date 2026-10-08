@@ -84,7 +84,7 @@ RUN apt-get update \
 # Changes when NODE_VERSION changes. nvm install.sh is fetched from GitHub so
 # pinning the version here is the sole cache-control.
 # =============================================================================
-ARG NODE_VERSION=24.13.0
+ARG NODE_VERSION=24.15.0
 ENV NVM_DIR=/home/frappe/.nvm
 ENV PATH=${NVM_DIR}/versions/node/v${NODE_VERSION}/bin/:${PATH}
 
