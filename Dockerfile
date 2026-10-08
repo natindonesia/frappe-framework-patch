@@ -35,6 +35,7 @@ ARG INSTALL_CHROMIUM=true
 # =============================================================================
 RUN useradd -ms /bin/bash frappe \
     && apt-get update \
+    && apt-get upgrade -y \
     && apt-get install --no-install-recommends -y \
         curl \
         git \
@@ -92,7 +93,7 @@ RUN mkdir -p ${NVM_DIR} \
     && . ${NVM_DIR}/nvm.sh \
     && nvm install ${NODE_VERSION} \
     && nvm use v${NODE_VERSION} \
-    && npm install -g yarn \
+    && npm install -g npm@latest yarn \
     && corepack enable pnpm \
     && nvm alias default v${NODE_VERSION} \
     && rm -rf ${NVM_DIR}/.cache \
@@ -223,7 +224,13 @@ RUN su - frappe -c '/home/frappe/frappe-bench/env/bin/pip install \
       opentelemetry-exporter-otlp-proto-http \
       opentelemetry-instrumentation-wsgi \
       opentelemetry-instrumentation-redis \
-      pyinstrument'
+      pyinstrument \
+    && /home/frappe/frappe-bench/env/bin/pip install --upgrade \
+      "pypdf>=6.19.0" \
+      "pyjwt>=2.14.0" \
+      "urllib3>=2.8.0" \
+      "setuptools>=78.1.1" \
+      "msgpack>=1.2.1"'
 
 # Overlay the OTEL emitter files onto the bench tree. bench init git-clones the
 # app, so uncommitted files would otherwise never reach the image and gunicorn
