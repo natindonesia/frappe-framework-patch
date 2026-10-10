@@ -127,6 +127,10 @@ RUN apt-get update \
 # =============================================================================
 COPY resources/nginx-template.conf /templates/nginx/frappe.conf.template
 COPY resources/nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
+# RUM telemetry bundle (built from resources/rum/rum-src.js with esbuild);
+# nginx serves it at /__rum.js and injects the script tag when the deployment
+# sets RUM_SCRIPT_TAG. Absent here, the location 404s silently.
+COPY resources/rum/rum.js /opt/rum/rum.js
 
 RUN pip3 install frappe-bench \
     && chmod +x /usr/local/bin/nginx-entrypoint.sh \

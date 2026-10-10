@@ -44,6 +44,13 @@ if [[ -z "$CLIENT_MAX_BODY_SIZE" ]]; then
   export CLIENT_MAX_BODY_SIZE=100m
 fi
 
+# RUM: when RUM_SCRIPT_TAG is set, inject the script tag into HTML responses
+# proxied to the app (sub_filter). Uncompressed upstream is required for
+# sub_filter to see the raw body; nginx re-compresses on the way out.
+if [[ -z "$RUM_SCRIPT_TAG" ]]; then
+  export RUM_SCRIPT_TAG=""
+fi
+
 if [[ -z "$OTEL_SERVICE_NAME" ]]; then
   echo "OTEL_SERVICE_NAME defaulting to frappe-nginx"
   export OTEL_SERVICE_NAME=frappe-nginx
@@ -59,6 +66,18 @@ envsubst '${BACKEND}
   ${PROXY_READ_TIMEOUT}
 	${CLIENT_MAX_BODY_SIZE}' \
   </templates/nginx/frappe.conf.template >/etc/nginx/conf.d/frappe.conf
+
+# RUM injection: replace the marker with sub_filter directives when enabled.
+if [[ -n "$RUM_SCRIPT_TAG" ]]; then
+  RUM_DIRECTIVES="$(printf '\t\tsub_filter '"'"'</head>'"'"' '"'"'%s'"'"';\n\t\tsub_filter_once on;\n\t\tproxy_set_header Accept-Encoding "";' "$RUM_SCRIPT_TAG")"
+  awk -v directives="$RUM_DIRECTIVES" '{ sub(/# RUM_SPAN_DIRECTIVES/, directives); print }' \
+    /etc/nginx/conf.d/frappe.conf > /tmp/frappe.conf.rum \
+    && cat /tmp/frappe.conf.rum > /etc/nginx/conf.d/frappe.conf \
+    && rm /tmp/frappe.conf.rum
+  echo "RUM injection enabled"
+else
+  sed -i '/# RUM_SPAN_DIRECTIVES/d' /etc/nginx/conf.d/frappe.conf
+fi
 
 # OpenTelemetry: the nginx leg is enabled by the presence of
 # NGINX_OTEL_ENDPOINT, which defaults to being derived from the shared
