@@ -187,7 +187,7 @@ jobs:
             env/bin/python -c "import frappe; print(\"frappe\", frappe.__version__)"
           '
 
-      - name: Test assets.json integrity (every bundle serves HTTP 2xx via nginx)
+      - name: Test assets.json integrity and enforce standalone image format (HTTP 2xx via nginx)
         run: |
           # nginx reads the assets map from the sites PVC (populated by the
           # init Job from the manifest baked in the runtime image) and serves
@@ -195,6 +195,8 @@ jobs:
           # Parses sites/assets/assets.json and asserts each bundle reference
           # actually serves HTTP 2xx through nginx (catches missing hashed
           # files that would 404 in production).
+          # Also enforces standalone image format: every mounted app MUST have its
+          # static public assets (icons, SVGs, manifest) reachable with HTTP 2xx.
           NGINX_POD=$(kubectl -n "$NAMESPACE" get pod -l app=nginx -o jsonpath='{.items[0].metadata.name}')
           kubectl -n "$NAMESPACE" exec -i "$NGINX_POD" -c nginx -- python3 - <<'EOS'
           import json, subprocess, sys, os
@@ -231,12 +233,36 @@ jobs:
                   failed.append((name, url_path, code))
               else:
                   print(f"✅ {name} -> {url_path} (HTTP {code})")
+
+          # Enforce standalone image format contract:
+          # Verify known static public assets across all apps return HTTP 2xx via nginx
+          static_checks = [
+              ("frappe", "/assets/frappe/images/frappe-framework-logo.svg"),
+              ("erpnext", "/assets/erpnext/icons/desktop_icons/solid/subscription.svg"),
+              ("erpnext", "/assets/erpnext/images/erpnext-logo.svg"),
+              ("hrms", "/assets/hrms/frontend/manifest.webmanifest"),
+              ("hrms", "/assets/hrms/frontend/index.html"),
+              ("eps", "/assets/eps/images/eps.svg"),
+          ]
+          print(f"Enforcing standalone image static asset contract ({len(static_checks)} checks)...")
+          for app, static_url in static_checks:
+              r = subprocess.run(
+                  ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                   f"http://127.0.0.1:8080{static_url}"],
+                  capture_output=True, text=True)
+              code = r.stdout or "000"
+              if code[:1] != "2":
+                  print(f"❌ {app} static asset -> {static_url} returned HTTP {code}")
+                  failed.append((f"{app}:static", static_url, code))
+              else:
+                  print(f"✅ {app} static asset -> {static_url} (HTTP {code})")
+
           if failed:
-              print("❌ assets.json integrity failed:")
+              print("❌ Standalone image asset contract validation failed:")
               for name, p, code in failed:
                   print(f"  {name} ({p}) HTTP {code}")
               sys.exit(1)
-          print(f"✅ All {len(manifest)} assets.json bundles serve HTTP 2xx through nginx")
+          print(f"✅ All {len(manifest)} assets.json bundles and static public assets serve HTTP 2xx through nginx")
           EOS
 
       - name: Cleanup cluster

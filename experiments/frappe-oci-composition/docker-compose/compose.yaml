@@ -168,11 +168,14 @@ services:
               continue
             fi
             # Bench convention, zero copying: sites/assets/<app> symlinks to
-            # the app package's public/ tree (bundles live in public/dist,
-            # prebuilt inside each app's immutable artifact). nginx resolves
-            # the symlink through its own read-only app image mounts.
+            # the app's assets/ directory (containing both static assets and
+            # compiled dist/ bundles). Falls back to package's public/ tree.
             rm -rf "sites/assets/$$app"
-            ln -s "/home/frappe/frappe-bench/apps/$$app/$$app/public" "sites/assets/$$app"
+            if [ -d "/home/frappe/frappe-bench/apps/$$app/assets" ]; then
+              ln -s "/home/frappe/frappe-bench/apps/$$app/assets" "sites/assets/$$app"
+            else
+              ln -s "/home/frappe/frappe-bench/apps/$$app/$$app/public" "sites/assets/$$app"
+            fi
           done
           set +x
           echo "[init] apps installed"
@@ -320,7 +323,7 @@ services:
         target: /home/frappe/frappe-bench/sites/assets/fayolex_extension
         read_only: true
         image:
-          subpath: fayolex_extension/public
+          subpath: assets
       - type: image
         source: composed/eps:latest
         target: /home/frappe/frappe-bench/sites/assets/eps
@@ -332,7 +335,7 @@ services:
         target: /home/frappe/frappe-bench/sites/assets/fayolex_decision_science_tools
         read_only: true
         image:
-          subpath: fayolex_decision_science_tools/public
+          subpath: assets
     ports:
       - "${HTTP_PORT:-8085}:8080"
     depends_on:
