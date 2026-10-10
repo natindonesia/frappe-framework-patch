@@ -1,11 +1,15 @@
 diff --git a/node_utils.js b/node_utils.js
-index 0fc5a37189..06ce01b5d8 100644
+index 0fc5a37189..0c39721660 100644
 --- a/node_utils.js
 +++ b/node_utils.js
-@@ -53,6 +53,9 @@ function get_conf() {
+@@ -53,6 +53,13 @@ function get_conf() {
  	if (process.env.FRAPPE_SOCKETIO_UDS) {
  		conf.socketio_uds = process.env.FRAPPE_SOCKETIO_UDS;
  	}
++	// PATCH NOTE (0006): FRAPPE_BACKEND_URL lets the socketio pod reach the gunicorn
++	// web pod directly (e.g. http://web:8000) via cluster networking. Without it,
++	// authentication calls route through the public ingress (hairpin loopback),
++	// which breaks when the ingress blocks pods calling their own public hostname.
 +	if (process.env.FRAPPE_BACKEND_URL) {
 +		conf.backend_url = process.env.FRAPPE_BACKEND_URL;
 +	}
@@ -13,29 +17,53 @@ index 0fc5a37189..06ce01b5d8 100644
  }
  
 diff --git a/realtime/index.js b/realtime/index.js
-index f333710382..ed5a97fa8c 100644
+index f333710382..58ed132021 100644
 --- a/realtime/index.js
 +++ b/realtime/index.js
-@@ -66,7 +66,13 @@ function get_app_handlers(app) {
+@@ -9,9 +9,11 @@ const conf = get_conf();
+ const server = http.createServer();
+ 
+ let io = new Server(server, {
+-	cors: {
+-		// Should be fine since we are ensuring whether hostname and origin are same before adding setting listeners for s socket
+-		origin: true,
++		cors: {
++			// PATCH NOTE (0006): origin:true is safe only because the authenticate
++			// middleware below rejects cross-origin sockets before any listener
++			// is registered for them.
++			origin: true,
+ 		credentials: true,
+ 	},
+ 	cleanupEmptyChildNamespaces: true,
+@@ -66,7 +68,18 @@ function get_app_handlers(app) {
  	return handler;
  }
  
 -realtime.on("connection", on_connection);
-+realtime.on("connection", (socket) => {
-+	const user_hash = socket.user
-+		? require("node:crypto").createHash("sha256").update(String(socket.user)).digest("hex").slice(0, 12)
-+		: "anonymous";
-+	console.log(`[Socket.IO ${socket.id}] connected user=${user_hash} site=${socket.nsp.name}`);
-+	on_connection(socket);
-+});
++	// PATCH NOTE (0006): log connections with a pseudonymized user id.
++	// socket.user is an email address (GDPR personal data) — raw emails must
++	// not end up in centralized pod logs, so we emit a truncated SHA-256 hash.
++	// 12 hex chars is enough to correlate a session for debugging without
++	// being reversible.
++	realtime.on("connection", (socket) => {
++		const user_hash = socket.user
++			? require("node:crypto").createHash("sha256").update(String(socket.user)).digest("hex").slice(0, 12)
++			: "anonymous";
++		console.log(`[Socket.IO ${socket.id}] connected user=${user_hash} site=${socket.nsp.name}`);
++		on_connection(socket);
++	});
  // =======================
  
  // Consume events sent from python via redis pub-sub channel.
-@@ -75,7 +81,12 @@ const subscriber = get_redis_subscriber();
+@@ -75,7 +88,16 @@ const subscriber = get_redis_subscriber();
  (async () => {
  	await subscriber.connect();
  	subscriber.subscribe("events", (message) => {
 -		message = JSON.parse(message);
++		// PATCH NOTE (0006): a malformed payload on the redis events channel
++		// (publisher bug, encoding issue) must never take down the whole
++		// realtime process — one bad message would otherwise raise inside this
++		// callback and kill every connected socket. Log and skip instead.
 +		try {
 +			message = JSON.parse(message);
 +		} catch (e) {
@@ -46,16 +74,21 @@ index f333710382..ed5a97fa8c 100644
  		if (message.room) {
  			io.of(namespace).to(message.room).emit(message.event, message.message);
 diff --git a/realtime/middlewares/authenticate.js b/realtime/middlewares/authenticate.js
-index e2c9d5794b..f8c032ce47 100644
+index e2c9d5794b..ea6c953c4c 100644
 --- a/realtime/middlewares/authenticate.js
 +++ b/realtime/middlewares/authenticate.js
-@@ -5,9 +5,13 @@ const conf = get_conf();
+@@ -5,9 +5,18 @@ const conf = get_conf();
  const redisClient = get_redis_subscriber("redis_queue");
  
  async function getSecretFromRedis() {
 -	if (!redisClient.isOpen) await redisClient.connect();
 -	const val = await redisClient.get("socketio_auth_secret");
 -	return val;
++	// PATCH NOTE (0006): never let a transient Redis outage crash the
++	// authentication middleware. Returning null simply skips the
++	// X-Frappe-Socket-Secret header; the backend still authenticates the
++	// request via cookie/authorization, so sockets degrade gracefully
++	// instead of dropping wholesale.
 +	try {
 +		if (!redisClient.isOpen) await redisClient.connect();
 +		return await redisClient.get("socketio_auth_secret");
@@ -66,11 +99,19 @@ index e2c9d5794b..f8c032ce47 100644
  }
  
  function authenticate_with_frappe(socket, next) {
-@@ -18,7 +22,10 @@ function authenticate_with_frappe(socket, next) {
+@@ -18,7 +27,18 @@ function authenticate_with_frappe(socket, next) {
  		next(new Error("Invalid namespace"));
  	}
  
 -	if (get_hostname(socket.request.headers.host) != get_hostname(socket.request.headers.origin)) {
++	// PATCH NOTE (0006): only enforce the origin check when the browser actually
++	// sent an Origin header. Chrome/Firefox/Safari omit Origin on same-origin
++	// HTTP polling GET requests, and behind Kubernetes ingress (without nginx's
++	// synthetic proxy_set_header Origin ...) the header is simply absent.
++	// get_hostname(undefined) returns undefined, so upstream's comparison always
++	// failed in that case and legitimate same-origin sockets were rejected with
++	// "Invalid origin". Cross-origin requests still carry Origin and are
++	// still verified.
 +	if (
 +		socket.request.headers.origin &&
 +		get_hostname(socket.request.headers.host) != get_hostname(socket.request.headers.origin)
@@ -78,10 +119,14 @@ index e2c9d5794b..f8c032ce47 100644
  		next(new Error("Invalid origin"));
  		return;
  	}
-@@ -54,6 +61,11 @@ function authenticate_with_frappe(socket, next) {
+@@ -54,6 +74,15 @@ function authenticate_with_frappe(socket, next) {
  		} else if (socket.sid) {
  			headers["Cookie"] = `sid=${socket.sid}`;
  		}
++		// PATCH NOTE (0006): when FRAPPE_BACKEND_URL routes us straight to the
++		// web pod (bypassing the ingress), the ingress never rewrites Host for
++		// us. Set Host and X-Frappe-Site-Name explicitly so gunicorn/frappe
++		// resolves the correct site in multitenancy mode.
 +		const site_name = get_site_name(socket);
 +		if (site_name) {
 +			headers["Host"] = site_name;
@@ -90,28 +135,41 @@ index e2c9d5794b..f8c032ce47 100644
  		const secret = await getSecretFromRedis();
  		if (secret) {
  			headers["X-Frappe-Socket-Secret"] = secret;
-@@ -82,7 +94,8 @@ function authenticate_with_frappe(socket, next) {
+@@ -82,7 +111,12 @@ function authenticate_with_frappe(socket, next) {
  			next();
  		})
  		.catch((e) => {
 -			next(new Error(`Unauthorized: ${e}`));
++			// PATCH NOTE (0006): log socket.id + site so failures are diagnosable in
++			// aggregated pod logs without leaking user identifiers (GDPR: no PII
++			// in operational logs). e.message instead of raw e avoids "[object
++			// Object]" noise and avoids echoing full backend error bodies into logs.
 +			console.error(`[Socket.IO ${socket.id}] Authentication error for site ${socket.nsp.name}:`, e.message || e);
 +			next(new Error(`Unauthorized: ${e.message || e}`));
  		});
  }
  
 diff --git a/realtime/utils.js b/realtime/utils.js
-index 137bde4b25..ef591204fd 100644
+index 137bde4b25..e8b16e0065 100644
 --- a/realtime/utils.js
 +++ b/realtime/utils.js
-@@ -5,7 +5,10 @@ function get_url(socket, path) {
+@@ -5,7 +5,19 @@ function get_url(socket, path) {
  	if (!path) {
  		path = "";
  	}
 -	let url = socket.request.headers.origin;
++	// PATCH NOTE (0006): in Kubernetes the socketio pod must call the web backend
++	// directly (e.g. http://web:8000) instead of bouncing off the public ingress
++	// (hairpin loopback). FRAPPE_BACKEND_URL short-circuits that. Upstream instead
++	// used the browser's Origin header verbatim, which produced two failure modes:
++	//   - Origin absent (browsers omit it on same-origin polling requests) ->
++	//     literal "undefined/api/..." URLs -> browser "GET /undefined: 404" errors;
++	//   - Origin present -> outbound public-internet call back to our own ingress.
 +	if (conf.backend_url) {
 +		return conf.backend_url + path;
 +	}
++	// No backend URL configured: fall back to Origin, then Host, so a missing
++	// Origin header can never yield a garbage "undefined" URL.
 +	let url = socket.request.headers.origin || `http://${socket.request.headers.host}`;
  	if (conf.developer_mode) {
  		let [protocol, host, port] = url.split(":");
