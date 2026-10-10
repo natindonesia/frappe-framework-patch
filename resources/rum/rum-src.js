@@ -100,10 +100,10 @@ if (!window.__RUM_DISABLED__) {
   };
 
   // Report both on interaction and on page lifecycle events.
-  vitals.onTTFB((m) => report(m, 'rum.ttfb'));
-  vitals.onLCP((m) => report(m, 'rum.lcp'));
-  vitals.onINP((m) => report(m, 'rum.inp'));
-  vitals.onCLS((m) => report(m, 'rum.cls'));
+  onTTFB((m) => report(m, 'rum.ttfb'));
+  onLCP((m) => report(m, 'rum.lcp'));
+  onINP((m) => report(m, 'rum.inp'));
+  onCLS((m) => report(m, 'rum.cls'));
   // Flush on hide (mobile) / pagehide (desktop) so last vitals aren't lost.
   const flush = () => window.dispatchEvent(new Event('rum-flush'));
   ['visibilitychange', 'pagehide'].forEach((ev) =>
