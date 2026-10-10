@@ -84,6 +84,12 @@ PATCH_MARKERS = [
         "Switch to CRM",
         "removed",
     ),
+    (
+        "0006-realtime-backend-url-and-origin-handling.patch",
+        "node_utils.js",
+        "FRAPPE_BACKEND_URL",
+        "added",
+    ),
 ]
 
 
@@ -147,6 +153,39 @@ class PatchApplyTests(unittest.TestCase):
 
             py_compile_file(root / "frappe/integrations/trace_context.py")
             py_compile_file(root / "frappe/utils/background_jobs.py")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+REALTIME_JS = [
+    "node_utils.js",
+    "realtime/index.js",
+    "realtime/utils.js",
+    "realtime/middlewares/authenticate.js",
+]
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class NodeSyntaxTests(unittest.TestCase):
+    """Patched realtime JS must parse (node --check) — guards against
+    syntax-breaking patches reaching the socketio image."""
+
+    def setUp(self):
+        if not (SUBMODULE / "frappe").exists():
+            self.fail("submodule ./frappe not initialized; run `git submodule update --init`")
+
+    def test_patched_realtime_js_parses(self):
+        tmp = _pristine_tree()
+        try:
+            root = tmp / "frappe"
+            _apply_patches(tmp)
+            for rel in REALTIME_JS:
+                res = subprocess.run(
+                    ["node", "--check", str(root / rel)],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(res.returncode, 0, f"{rel} fails node --check:\n{res.stderr}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

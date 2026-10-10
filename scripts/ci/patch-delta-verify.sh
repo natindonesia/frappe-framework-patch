@@ -13,6 +13,8 @@
 #   0004-desktop-remove-about-link.patch        REMOVES "frappe.ui.toolbar.show_about" from desk/page/desktop/desktop.js
 #   0005-sidebar-remove-crm-banner.patch        REMOVES "Switch to CRM" from public/js/frappe/ui/sidebar/sidebar.js
 #                                               -> base PRESENT, latest ABSENT
+#   0006-realtime-backend-url-and-origin-handling.patch ADDS "FRAPPE_BACKEND_URL" to realtime/utils.js
+#                                               -> base ABSENT,  latest PRESENT
 set -euo pipefail
 # shellcheck source=scripts/ci/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -65,6 +67,10 @@ check frappe:latest no  frappe/desk/page/desktop/desktop.js "frappe.ui.toolbar.s
 # 0005-sidebar-remove-crm-banner.patch
 check frappe:base   yes frappe/public/js/frappe/ui/sidebar/sidebar.js "Switch to CRM" 0005-sidebar-remove-crm-banner.patch
 check frappe:latest no  frappe/public/js/frappe/ui/sidebar/sidebar.js "Switch to CRM" 0005-sidebar-remove-crm-banner.patch
+
+# 0006-realtime-backend-url-and-origin-handling.patch
+check frappe:base   no  node_utils.js "FRAPPE_BACKEND_URL" 0006-realtime-backend-url-and-origin-handling.patch
+check frappe:latest yes node_utils.js "FRAPPE_BACKEND_URL" 0006-realtime-backend-url-and-origin-handling.patch
 
 # Guard against empty-marker accidents: every removal marker MUST really exist
 # in the pristine base (checked above via "yes") and every added marker MUST

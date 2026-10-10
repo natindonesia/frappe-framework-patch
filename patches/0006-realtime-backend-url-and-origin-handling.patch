@@ -1,0 +1,118 @@
+diff --git a/node_utils.js b/node_utils.js
+index 0fc5a37189..06ce01b5d8 100644
+--- a/node_utils.js
++++ b/node_utils.js
+@@ -53,6 +53,9 @@ function get_conf() {
+ 	if (process.env.FRAPPE_SOCKETIO_UDS) {
+ 		conf.socketio_uds = process.env.FRAPPE_SOCKETIO_UDS;
+ 	}
++	if (process.env.FRAPPE_BACKEND_URL) {
++		conf.backend_url = process.env.FRAPPE_BACKEND_URL;
++	}
+ 	return conf;
+ }
+ 
+diff --git a/realtime/index.js b/realtime/index.js
+index f333710382..ed5a97fa8c 100644
+--- a/realtime/index.js
++++ b/realtime/index.js
+@@ -66,7 +66,13 @@ function get_app_handlers(app) {
+ 	return handler;
+ }
+ 
+-realtime.on("connection", on_connection);
++realtime.on("connection", (socket) => {
++	const user_hash = socket.user
++		? require("node:crypto").createHash("sha256").update(String(socket.user)).digest("hex").slice(0, 12)
++		: "anonymous";
++	console.log(`[Socket.IO ${socket.id}] connected user=${user_hash} site=${socket.nsp.name}`);
++	on_connection(socket);
++});
+ // =======================
+ 
+ // Consume events sent from python via redis pub-sub channel.
+@@ -75,7 +81,12 @@ const subscriber = get_redis_subscriber();
+ (async () => {
+ 	await subscriber.connect();
+ 	subscriber.subscribe("events", (message) => {
+-		message = JSON.parse(message);
++		try {
++			message = JSON.parse(message);
++		} catch (e) {
++			console.error(`[Socket.IO] Invalid message on redis events channel: ${e.message || e}`);
++			return;
++		}
+ 		let namespace = "/" + message.namespace;
+ 		if (message.room) {
+ 			io.of(namespace).to(message.room).emit(message.event, message.message);
+diff --git a/realtime/middlewares/authenticate.js b/realtime/middlewares/authenticate.js
+index e2c9d5794b..f8c032ce47 100644
+--- a/realtime/middlewares/authenticate.js
++++ b/realtime/middlewares/authenticate.js
+@@ -5,9 +5,13 @@ const conf = get_conf();
+ const redisClient = get_redis_subscriber("redis_queue");
+ 
+ async function getSecretFromRedis() {
+-	if (!redisClient.isOpen) await redisClient.connect();
+-	const val = await redisClient.get("socketio_auth_secret");
+-	return val;
++	try {
++		if (!redisClient.isOpen) await redisClient.connect();
++		return await redisClient.get("socketio_auth_secret");
++	} catch (e) {
++		console.warn("[Socket.IO] Failed to get auth secret from redis:", e.message || e);
++		return null;
++	}
+ }
+ 
+ function authenticate_with_frappe(socket, next) {
+@@ -18,7 +22,10 @@ function authenticate_with_frappe(socket, next) {
+ 		next(new Error("Invalid namespace"));
+ 	}
+ 
+-	if (get_hostname(socket.request.headers.host) != get_hostname(socket.request.headers.origin)) {
++	if (
++		socket.request.headers.origin &&
++		get_hostname(socket.request.headers.host) != get_hostname(socket.request.headers.origin)
++	) {
+ 		next(new Error("Invalid origin"));
+ 		return;
+ 	}
+@@ -54,6 +61,11 @@ function authenticate_with_frappe(socket, next) {
+ 		} else if (socket.sid) {
+ 			headers["Cookie"] = `sid=${socket.sid}`;
+ 		}
++		const site_name = get_site_name(socket);
++		if (site_name) {
++			headers["Host"] = site_name;
++			headers["X-Frappe-Site-Name"] = site_name;
++		}
+ 		const secret = await getSecretFromRedis();
+ 		if (secret) {
+ 			headers["X-Frappe-Socket-Secret"] = secret;
+@@ -82,7 +94,8 @@ function authenticate_with_frappe(socket, next) {
+ 			next();
+ 		})
+ 		.catch((e) => {
+-			next(new Error(`Unauthorized: ${e}`));
++			console.error(`[Socket.IO ${socket.id}] Authentication error for site ${socket.nsp.name}:`, e.message || e);
++			next(new Error(`Unauthorized: ${e.message || e}`));
+ 		});
+ }
+ 
+diff --git a/realtime/utils.js b/realtime/utils.js
+index 137bde4b25..ef591204fd 100644
+--- a/realtime/utils.js
++++ b/realtime/utils.js
+@@ -5,7 +5,10 @@ function get_url(socket, path) {
+ 	if (!path) {
+ 		path = "";
+ 	}
+-	let url = socket.request.headers.origin;
++	if (conf.backend_url) {
++		return conf.backend_url + path;
++	}
++	let url = socket.request.headers.origin || `http://${socket.request.headers.host}`;
+ 	if (conf.developer_mode) {
+ 		let [protocol, host, port] = url.split(":");
+ 		port = conf.webserver_port;
