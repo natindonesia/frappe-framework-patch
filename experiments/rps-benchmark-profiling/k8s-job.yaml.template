@@ -1,0 +1,79 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fayolex-working-staging-benchmark-job
+  namespace: default
+  labels:
+    app.kubernetes.io/name: fayolex-working-staging-benchmark
+    app.kubernetes.io/part-of: fayolex-working-staging
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fayolex-working-staging-benchmark
+    spec:
+      restartPolicy: Never
+      hostAliases:
+        - ip: "172.24.11.70"
+          hostnames:
+            - "demo.fayolex.co.id"
+            - "ananda.fayolex.co.id"
+      volumes:
+        - name: script-vol
+          configMap:
+            name: fayolex-working-staging-benchmark-config
+        - name: results-vol
+          emptyDir: {}
+      containers:
+        - name: k6-runner
+          image: grafana/k6:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - "sh"
+            - "-c"
+            - |
+              if [ -n "${SCENARIO}" ]; then
+                echo "[*] Launching k6 benchmark in k8s pod with Scenario=${SCENARIO}..."
+                k6 run --summary-export=/results/summary.json /scripts/k6-workload.js
+              else
+                echo "[*] Launching k6 benchmark in k8s pod with VUs=${TEST_VUS} Duration=${TEST_DURATION}..."
+                k6 run --vus "${TEST_VUS}" --duration "${TEST_DURATION}" --summary-export=/results/summary.json /scripts/k6-workload.js
+              fi
+              echo "===K6_SUMMARY_START==="
+              cat /results/summary.json
+              echo "===K6_SUMMARY_END==="
+          env:
+            - name: TARGET_URL
+              value: "${TARGET_URL}"
+            - name: API_KEY
+              value: "${API_KEY}"
+            - name: API_SECRET
+              value: "${API_SECRET}"
+            - name: USER_EMAIL
+              value: "${USER_EMAIL}"
+            - name: USER_PASSWORD
+              value: "${USER_PASSWORD}"
+            - name: ENABLE_LOGIN
+              value: "${ENABLE_LOGIN}"
+            - name: WORKLOAD_TYPE
+              value: "${WORKLOAD_TYPE}"
+            - name: SCENARIO
+              value: "${SCENARIO}"
+            - name: TEST_VUS
+              value: "${TEST_VUS}"
+            - name: TEST_DURATION
+              value: "${TEST_DURATION}"
+          volumeMounts:
+            - name: script-vol
+              mountPath: /scripts
+            - name: results-vol
+              mountPath: /results
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "4"
+              memory: 2Gi
