@@ -42,7 +42,14 @@ docker run --rm frappe:latest bash -c '
     || { echo "nginx never came up on 8080"; exit 1; }
 
   # The manifest must be gone from disk ...
-  test ! -e sites/assets/assets.json || { echo "assets.json manifest still present"; exit 1; }
+  if [ -e sites/assets/assets.json ]; then
+    echo "assets.json manifest still present:" >&2
+    ls -la sites/assets/assets.json >&2
+    find sites/assets -maxdepth 1 -printf "%y %p -> %l\n" >&2
+    find apps/frappe/frappe/public -maxdepth 1 -printf "%y %p -> %l\n" 2>/dev/null | head -20 >&2
+    find apps/frappe/frappe -name assets.json >&2
+    exit 1
+  fi
   # ... and 404 over HTTP (nginx `try_files $uri =404`).
   MANIFEST_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/assets/assets.json)
   test "$MANIFEST_CODE" = 404
