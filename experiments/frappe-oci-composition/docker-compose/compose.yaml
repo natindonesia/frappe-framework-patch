@@ -63,8 +63,8 @@ x-frappe-volumes-runtime: &frappe-volumes-runtime
     source: composed/fayolex_decision_science_tools:latest
     target: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
     read_only: true
-  - type: image
-    source: composed-frappe-granian:latest
+
+x-frappe-build: &frappe-build
   context: .
   dockerfile: Dockerfile
 
@@ -136,17 +136,18 @@ services:
     # sites/apps.txt from the mounted app set, creates the site and, on
     # restarts, migrates using exactly this release's artifacts (issue #3
     # section 9). On first boot we additionally install every selected app.
-    # Asset stitching is NOT done here: the merged asset map ships baked in
-    # the runtime image (/opt/defaults/assets.json) and is image-mounted
-    # read-only over sites/assets/assets.json on every service, including
-    # this one; init.sh skips its seeding copy on the read-only destination.
-    # nginx serves app asset files straight from the read-only app image
-    # mounts.
+    # No asset manifest exists any more: bundle filenames are unhashed
+    # (patch 0007), so assets resolve straight off the read-only app image
+    # mounts (nginx) and the sites volume (frappe); init.sh does not seed
+    # any manifest.
     command:
       - -c
-    # No asset manifest exists any more: bundle filenames are unhashed, so app
-    # assets resolve directly off the read-only app image mounts (nginx) and the
-    # sites volume (frappe).
+      - |
+        set -e
+        cd /home/frappe/frappe-bench
+        first=0
+        [ -d "sites/$${SITE_NAME}" ] || first=1
+        /usr/local/bin/init.sh
         if [ "$$first" = 1 ]; then
           set -x
           for app in $$(ls apps | grep -vx frappe); do
@@ -286,19 +287,20 @@ services:
       FRAPPE_SITE_NAME_HEADER: ${SITE_NAME:-crm.localhost}
     volumes:
       - sites-data:/home/frappe/frappe-bench/sites:ro
-      # Serve the MERGED manifest (frappe base + every app snapshot), not the
-      # stale frappe-only copy the named volume self-seeded from the base
-      # image. Same mount the other runtime services use.
-      - type: image
-        source: composed-frappe-granian:latest
-        target: /home/frappe/frappe-bench/sites/assets/assets.json
-        read_only: true
-        image:
-          subpath: opt/defaults/assets.json
+      # No manifest is image-mounted any more: bundle filenames are unhashed
+      # (patch 0007), so frappe assets are served straight off the sites
+      # volume, and app assets off these per-app image mounts.
       - type: image
         source: composed/erpnext:latest
-      # No manifest is image-mounted any more: bundle filenames are unhashed, so
-      # nginx serves frappe assets straight off the sites volume.
+        target: /home/frappe/frappe-bench/sites/assets/erpnext
+        read_only: true
+        image:
+          subpath: assets
+      - type: image
+        source: composed/hrms:latest
+        target: /home/frappe/frappe-bench/sites/assets/hrms
+        read_only: true
+        image:
           subpath: assets
       - type: image
         source: composed/fayolex_extension:latest
