@@ -218,7 +218,7 @@ jobs:
           static_checks = [
               ("frappe", "/assets/frappe/images/frappe-framework-logo.svg"),
               ("erpnext", "/assets/erpnext/icons/desktop_icons/solid/subscription.svg"),
-              ("erpnext", "/assets/erpnext/images/erpnext-logo.svg"),
+              ("erpnext", "/assets/erpnext/images/Logo.svg"),
               ("hrms", "/assets/hrms/frontend/manifest.webmanifest"),
               ("hrms", "/assets/hrms/frontend/index.html"),
               ("eps", "/assets/eps/images/eps.svg"),
