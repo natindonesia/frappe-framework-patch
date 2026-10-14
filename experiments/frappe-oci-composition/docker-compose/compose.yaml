@@ -37,12 +37,10 @@ x-frappe-volumes: &frappe-volumes
     target: /home/frappe/frappe-bench/apps/fayolex_decision_science_tools
     read_only: true
 
-# Runtime services — init included — read the merged asset map directly from
-# the baked manifest (/opt/defaults/assets.json): the manifest is image-mounted
-# read-only over sites/assets/assets.json, exactly where frappe reads it
-# (frappe/frappe/utils/__init__.py: get_asset_map / read_file("assets/assets.json")).
-# Nothing ever writes the manifest; init.sh detects the read-only destination
-# and skips its seeding copy.
+# Runtime services — init included — read assets straight off the app mounts
+# (and the sites volume for frappe). Bundle filenames are unhashed, so frappe's
+# logical asset paths resolve to real files: no manifest is built, shipped,
+# parsed or image-mounted.
 x-frappe-volumes-runtime: &frappe-volumes-runtime
   - sites-data:/home/frappe/frappe-bench/sites
   - type: image
@@ -67,12 +65,6 @@ x-frappe-volumes-runtime: &frappe-volumes-runtime
     read_only: true
   - type: image
     source: composed-frappe-granian:latest
-    target: /home/frappe/frappe-bench/sites/assets/assets.json
-    read_only: true
-    image:
-      subpath: opt/defaults/assets.json
-
-x-frappe-build: &frappe-build
   context: .
   dockerfile: Dockerfile
 
@@ -152,12 +144,9 @@ services:
     # mounts.
     command:
       - -c
-      - |
-        set -e
-        cd /home/frappe/frappe-bench
-        first=0
-        [ -d "sites/$${SITE_NAME}" ] || first=1
-        /usr/local/bin/init.sh
+    # No asset manifest exists any more: bundle filenames are unhashed, so app
+    # assets resolve directly off the read-only app image mounts (nginx) and the
+    # sites volume (frappe).
         if [ "$$first" = 1 ]; then
           set -x
           for app in $$(ls apps | grep -vx frappe); do
@@ -308,15 +297,8 @@ services:
           subpath: opt/defaults/assets.json
       - type: image
         source: composed/erpnext:latest
-        target: /home/frappe/frappe-bench/sites/assets/erpnext
-        read_only: true
-        image:
-          subpath: assets
-      - type: image
-        source: composed/hrms:latest
-        target: /home/frappe/frappe-bench/sites/assets/hrms
-        read_only: true
-        image:
+      # No manifest is image-mounted any more: bundle filenames are unhashed, so
+      # nginx serves frappe assets straight off the sites volume.
           subpath: assets
       - type: image
         source: composed/fayolex_extension:latest

@@ -110,49 +110,80 @@ jobs:
             env/bin/python -c "import frappe; print(\"frappe\", frappe.__version__)"
           '
 
-      - name: Test assets.json integrity and enforce standalone image format (HTTP 2xx via nginx)
+      - name: Enforce unhashed asset contract via nginx (no assets.json)
         run: |
-          # nginx mounts the same sites-data volume the init stage populated.
-          # Parses sites/assets/assets.json and asserts each bundle reference
-          # actually serves HTTP 2xx through nginx (catches missing hashed
-          # files that would 404 in production).
-          # Also enforces standalone image format: every mounted app MUST have its
-          # static public assets (icons, SVGs, manifest) reachable with HTTP 2xx.
+          # Bundle filenames are unhashed (esbuild entryNames "[dir]/[name]", see
+          # patches/0007-drop-assets-json-manifest.patch), so the old failure mode -
+          # manifest pointing at a content hash that 404s - cannot happen any more.
+          # What must hold instead: no manifest exists, and the logical path frappe
+          # emits is the path nginx serves. Plus the standalone static asset contract.
           docker compose exec -T nginx python3 - <<'EOS'
-          import json, subprocess, sys, os
+          import os, subprocess, sys
           sites = "/home/frappe/frappe-bench/sites"
-          path = os.path.join(sites, "assets", "assets.json")
-          if not os.path.exists(path):
-              print("❌ sites/assets/assets.json not found in nginx container")
+          manifest = os.path.join(sites, "assets", "assets.json")
+          if os.path.lexists(manifest):
+              print(f"❌ {manifest} still present - the manifest must not ship")
               sys.exit(1)
-          manifest = json.load(open(path))
-          print(f"assets.json present in nginx with {len(manifest)} entries")
-          # The composition must actually ship bundles for every selected
-          # app; a manifest missing an app's bundles would catch neither
-          # 404s nor an empty merge below.
-          apps_seen = {p.split("/")[2] for p in manifest.values()
-                       if isinstance(p, str) and p.startswith("/assets/")}
-          required = {"frappe", "erpnext", "hrms", "eps"}
-          missing = required - apps_seen
-          if missing:
-              print(f"❌ assets.json missing bundles for apps: {sorted(missing)}")
-              sys.exit(1)
-          print(f"✅ manifest covers required apps: {sorted(required & apps_seen)}")
+          print("✅ no assets.json manifest in the image or on the sites volume")
+
           failed = []
-          for name, ref in manifest.items():
-              url_path = ref if isinstance(ref, str) else ref.get("path", "")
-              if not url_path:
-                  continue
+
+          def check(label, url_path):
               r = subprocess.run(
                   ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
                    f"http://127.0.0.1:8080{url_path}"],
                   capture_output=True, text=True)
               code = r.stdout or "000"
               if code[:1] != "2":
-                  print(f"❌ {name} -> {url_path} returned HTTP {code}")
-                  failed.append((name, url_path, code))
+                  print(f"❌ {label} -> {url_path} returned HTTP {code}")
+                  failed.append((label, url_path, code))
               else:
-                  print(f"✅ {name} -> {url_path} (HTTP {code})")
+                  print(f"✅ {label} -> {url_path} (HTTP {code})")
+
+            # Frappe links these by their logical path; with unhashed bundle
+            # filenames the logical path must be exactly the served path.
+            # Every composition app's known bundles are asserted: the map is
+            # derived from the dist trees, so a name can only 404 if the app
+            # artifact actually failed to ship that bundle.
+            bundle_checks = [
+            	("frappe", "/assets/frappe/dist/js/desk.bundle.js"),
+            	("frappe", "/assets/frappe/dist/css/desk.bundle.css"),
+            	("frappe", "/assets/frappe/dist/css/login.bundle.css"),
+            	("frappe", "/assets/frappe/dist/css/print.bundle.css"),
+            	("frappe", "/assets/frappe/dist/js/web.bundle.js"),
+            	("frappe", "/assets/frappe/dist/css/website.bundle.css"),
+            	("frappe", "/assets/frappe/dist/js/form.bundle.js"),
+            	("frappe", "/assets/frappe/dist/js/controls.bundle.js"),
+            	("frappe", "/assets/frappe/dist/js/list.bundle.js"),
+            	("frappe", "/assets/frappe/dist/js/libs.bundle.js"),
+            	("frappe", "/assets/frappe/css/frappe.css"),
+            	("frappe", "/assets/frappe/node_modules/ace-builds/src-min-noconflict/ace.js"),
+            	("erpnext", "/assets/erpnext/dist/js/erpnext.bundle.js"),
+            	("erpnext", "/assets/erpnext/dist/css/erpnext.bundle.css"),
+            	("erpnext", "/assets/erpnext/dist/js/erpnext-web.bundle.js"),
+            	("erpnext", "/assets/erpnext/dist/css/erpnext-web.bundle.css"),
+            	("erpnext", "/assets/erpnext/dist/css/erpnext_email.bundle.css"),
+            	("erpnext", "/assets/erpnext/dist/js/bank-reconciliation-tool.bundle.js"),
+            	("erpnext", "/assets/erpnext/dist/js/point-of-sale.bundle.js"),
+            	("hrms", "/assets/hrms/dist/js/hrms.bundle.js"),
+            	("hrms", "/assets/hrms/dist/css/hrms.bundle.css"),
+            	("hrms", "/assets/hrms/dist/js/hierarchy-chart.bundle.js"),
+            	("hrms", "/assets/hrms/dist/js/performance.bundle.js"),
+            	("hrms", "/assets/hrms/dist/js/interview.bundle.js"),
+            	("eps", "/assets/eps/dist/js/eps.bundle.js"),
+            	("eps", "/assets/eps/dist/css/eps.bundle.css"),
+            	# RTL css bundles are keyed rtl_<name> and served from css-rtl/;
+            	# frappe emits these links for rtl locales, so they must serve too.
+            	("frappe:rtl", "/assets/frappe/dist/css-rtl/desk.bundle.css"),
+            	("frappe:rtl", "/assets/frappe/dist/css-rtl/login.bundle.css"),
+            	("frappe:rtl", "/assets/frappe/dist/css-rtl/website.bundle.css"),
+            	("erpnext:rtl", "/assets/erpnext/dist/css-rtl/erpnext.bundle.css"),
+            	("hrms:rtl", "/assets/hrms/dist/css-rtl/hrms.bundle.css"),
+            	("eps:rtl", "/assets/eps/dist/css-rtl/eps.bundle.css"),
+            ]
+          print(f"Enforcing unhashed bundle contract ({len(bundle_checks)} checks)...")
+          for app, url_path in bundle_checks:
+              check(app, url_path)
 
           # Enforce standalone image format contract:
           # Verify known static public assets across all apps return HTTP 2xx via nginx
@@ -166,23 +197,14 @@ jobs:
           ]
           print(f"Enforcing standalone image static asset contract ({len(static_checks)} checks)...")
           for app, static_url in static_checks:
-              r = subprocess.run(
-                  ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                   f"http://127.0.0.1:8080{static_url}"],
-                  capture_output=True, text=True)
-              code = r.stdout or "000"
-              if code[:1] != "2":
-                  print(f"❌ {app} static asset -> {static_url} returned HTTP {code}")
-                  failed.append((f"{app}:static", static_url, code))
-              else:
-                  print(f"✅ {app} static asset -> {static_url} (HTTP {code})")
+              check(f"{app}:static", static_url)
 
           if failed:
-              print("❌ Standalone image asset contract validation failed:")
+              print("❌ Asset contract validation failed:")
               for name, p, code in failed:
                   print(f"  {name} ({p}) HTTP {code}")
               sys.exit(1)
-          print(f"✅ All {len(manifest)} assets.json bundles and static public assets serve HTTP 2xx through nginx")
+          print("✅ No manifest, and all unhashed bundles + static public assets serve HTTP 2xx through nginx")
           EOS
 
       - name: Cleanup compose stack

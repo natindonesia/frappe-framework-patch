@@ -1,7 +1,7 @@
-# nginx — port of compose `nginx` service. Serves static assets from the
-# sites PVC (the assets.json manifest copied there by init, plus the per-app
-# symlinks sites/assets/<app> -> apps/<app>/<app>/public, which resolve
-# through this pod's own read-only app image mounts — same scheme as compose).
+# nginx — port of compose `nginx` service. Serves static assets from the sites
+# PVC (per-app symlinks sites/assets/<app> -> apps/<app>/assets or
+# apps/<app>/<app>/public, resolved through this pod's own read-only app image
+# mounts — same scheme as compose). No assets.json manifest exists.
 apiVersion: v1
 kind: Service
 metadata:

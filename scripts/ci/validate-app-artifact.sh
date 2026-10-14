@@ -9,7 +9,7 @@
 #   3. Top-level /opt/frappe/apps/<app_name>/assets exists:
 #      - Must contain static public assets (if app has public assets)
 #      - Must contain compiled dist/ bundles (if app builds assets)
-#   4. assets.json and apps.txt present if applicable
+#   4. apps.txt present if applicable
 #   5. No build-time node_modules leakage
 #
 # Usage:

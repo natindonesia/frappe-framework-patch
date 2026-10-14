@@ -128,8 +128,10 @@ The WSGI entrypoint is unchanged — Granian is a pure server swap.
    replicas can all connect — then installs any apps present in the bench,
    sets `developer_mode 1`, and runs `/scripts/fix-db-users.sh`.
 3. Subsequent runs: re-runs `fix-db-users.sh` and `bench --site all migrate`.
-4. Restores the image-baked `sites/assets/assets.json` (from `/opt/defaults/`)
-   onto the shared volume, overriding any stale copy.
+
+No asset manifest is involved: bundle filenames are unhashed (see
+`patches/0007-drop-assets-json-manifest.patch`), so there is no
+`sites/assets/assets.json` to bake, seed or refresh.
 
 ### Environment variables
 
@@ -146,6 +148,7 @@ The WSGI entrypoint is unchanged — Granian is a pure server swap.
 | `BACKEND`, `SOCKETIO` | nginx | `web:8000`, `socketio:9000` | Upstream addresses. |
 | `FRAPPE_SITE_NAME_HEADER` | nginx | `$SITE_NAME` | Site the nginx leg routes to. |
 | `UPSTREAM_REAL_IP_ADDRESS` | nginx | `127.0.0.1` | Trusted proxy for real-IP restoration. |
+| `FRAPPE_BUILD_VERSION` | web, workers | `$IMAGE_VERSION` | Cache-busting suffix appended to asset URLs. Bundle filenames are unhashed, so assets are versioned per release instead of by content hash. |
 | `HTTP_PORT` | compose | `8085` | Host port published for nginx. |
 
 The compose `otel-collector` service (always running, receives OTLP on

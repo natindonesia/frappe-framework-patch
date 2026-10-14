@@ -291,7 +291,6 @@ USER frappe
 RUN mkdir -p /home/frappe/logs /home/frappe/frappe-bench/logs
 COPY --from=builder-base --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 RUN find /home/frappe/frappe-bench/apps -mindepth 1 -path "*/.git" -exec rm -rf {} +
-COPY --from=builder-base --chown=frappe:frappe /home/frappe/frappe-bench/sites/assets/assets.json /opt/defaults/assets.json
 
 FROM base AS deploy-latest
 
@@ -299,7 +298,6 @@ USER frappe
 RUN mkdir -p /home/frappe/logs /home/frappe/frappe-bench/logs
 COPY --from=builder-patched --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 RUN find /home/frappe/frappe-bench/apps -mindepth 1 -path "*/.git" -exec rm -rf {} +
-COPY --from=builder-patched --chown=frappe:frappe /home/frappe/frappe-bench/sites/assets/assets.json /opt/defaults/assets.json
 
 # =============================================================================
 # Target frappe-base : variant=base (unpatched reference image).
@@ -310,6 +308,10 @@ ARG IMAGE_REVISION
 ARG IMAGE_SOURCE=https://github.com/natindonesia/frappe-framework-patch
 ARG IMAGE_CREATED
 ARG FRAPPE_SHA
+# Cache-busting for static assets: bundle filenames are unhashed (no
+# assets.json manifest), so asset URLs are versioned with the release image
+# instead of a content hash. Consumed by frappe.utils.get_build_version().
+ENV FRAPPE_BUILD_VERSION=${IMAGE_VERSION}
 LABEL org.opencontainers.image.title="Frappe Framework backend (unpatched base)" \
       org.opencontainers.image.description="Unpatched reference build of Frappe/ERPNext (pinned submodule, no local patches applied)." \
       org.opencontainers.image.url="https://github.com/natindonesia/frappe-framework-patch" \
@@ -336,6 +338,10 @@ ARG IMAGE_REVISION
 ARG IMAGE_SOURCE=https://github.com/natindonesia/frappe-framework-patch
 ARG IMAGE_CREATED
 ARG FRAPPE_SHA
+# Cache-busting for static assets: bundle filenames are unhashed (no
+# assets.json manifest), so asset URLs are versioned with the release image
+# instead of a content hash. Consumed by frappe.utils.get_build_version().
+ENV FRAPPE_BUILD_VERSION=${IMAGE_VERSION}
 LABEL org.opencontainers.image.title="Frappe Framework backend (patched)" \
       org.opencontainers.image.description="Patched production build of Frappe/ERPNext (pinned submodule plus local patch set)." \
       org.opencontainers.image.url="https://github.com/natindonesia/frappe-framework-patch" \

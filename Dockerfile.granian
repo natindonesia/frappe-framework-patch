@@ -31,6 +31,8 @@ ARG IMAGE_REVISION
 ARG IMAGE_SOURCE=https://github.com/natindonesia/frappe-framework-patch
 ARG IMAGE_CREATED
 ARG FRAPPE_SHA
+# Asset cache-busting: bundle filenames are unhashed (no assets.json manifest).
+ENV FRAPPE_BUILD_VERSION=${IMAGE_VERSION}
 LABEL org.opencontainers.image.title="Frappe Framework backend (Granian runtime)" \
       org.opencontainers.image.description="Patched Frappe/ERPNext served by the Granian WSGI/ASGI server instead of gunicorn." \
       org.opencontainers.image.url="https://github.com/natindonesia/frappe-framework-patch" \

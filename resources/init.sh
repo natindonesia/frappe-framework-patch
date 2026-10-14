@@ -45,18 +45,3 @@ else
   bench --site all migrate
 fi
 
-
-# Seed baked assets.json onto the shared sites volume. Skipped when the
-# destination is read-only (e.g. the composed deployment image-mounts the
-# manifest over sites/assets/assets.json directly, and init runs with the
-# same read-only mount).
-if [ -f "/opt/defaults/assets.json" ]; then
-  mkdir -p sites/assets
-  dest=sites/assets/assets.json
-  if [ -w "$dest" ] || { [ ! -e "$dest" ] && [ -w sites/assets ]; }; then
-    cp /opt/defaults/assets.json "$dest"
-  else
-    echo "[init] $dest is read-only - skipping baked assets.json copy"
-  fi
-fi
-

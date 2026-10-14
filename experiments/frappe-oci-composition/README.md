@@ -11,7 +11,7 @@ Under the **Frappe OCI Composition Model**:
    - Contains Frappe core, the Python virtual environment (`/home/frappe/frappe-bench/env`), Granian WSGI/ASGI server, and Nginx.
    - At build time, it extracts `pyproject.toml` from each selected app's artifact and compiles the union of all app dependencies into a single venv via `uv pip install`.
    - App import paths are registered into Python via `/home/frappe/frappe-bench/env/lib/python3.14/site-packages/composed-apps.pth`.
-   - Manifest snapshots (`assets.json`) from apps that build assets are merged into `/opt/defaults/assets.json`.
+   - No manifest is merged or shipped: bundle filenames are unhashed (`esbuild entryNames "[dir]/[name]"`, see `patches/0007-drop-assets-json-manifest.patch`), so app assets resolve straight off the mounted trees.
 2. **Independent App Artifacts (`ghcr.io/natindonesia/<app>:latest-standalone`)**:
    - Immutable, standalone OCI images containing only the app payload rooted at `/opt/frappe/apps/<app>`.
    - Built and tested in their own repositories.
@@ -35,7 +35,7 @@ Inside the published image (`ghcr.io/natindonesia/<app>:latest-standalone`):
 ├── assets/                      # UNIFIED static & compiled assets
 │   ├── dist/                    # Compiled JS/CSS bundles (if app builds frontend)
 │   └── <static files...>        # All public static files (icons, images, svgs)
-├── assets.json                  # Optional: bundle hash map (if app builds assets)
+
 └── apps.txt                     # Bench app identifier ("<app>\n")
 ```
 
@@ -84,7 +84,6 @@ RUN find /home/frappe/frappe-bench/apps/<app> /home/frappe/frappe-bench/sites/as
 FROM scratch AS artifact
 COPY --from=build /home/frappe/frappe-bench/apps/<app> /opt/frappe/apps/<app>
 COPY --from=build /home/frappe/frappe-bench/sites/assets/<app> /opt/frappe/apps/<app>/assets
-COPY --from=build /home/frappe/frappe-bench/sites/assets/assets.json /opt/frappe/apps/<app>/assets.json
 COPY --from=build /tmp/apps.txt /opt/frappe/apps/<app>/apps.txt
 ```
 
@@ -138,10 +137,10 @@ Once the app artifact is published to GHCR as `ghcr.io/natindonesia/<app>:latest
 4. **Register in `composed-apps.pth`**:
    Add `/home/frappe/frappe-bench/apps/<app>` to `composed-apps.pth`.
 
-5. **(If Built) Merge `assets.json` Manifest**:
-   ```dockerfile
-   COPY --from=src-<app> /opt/frappe/apps/<app>/assets.json /tmp/manifests/<app>.json
-   ```
+5. **No manifest to merge**: bundle filenames are unhashed, so the artifact's
+   `assets/` tree is mounted as-is. There is no `assets.json` to copy,
+   merge or reconcile.
+
 
 ### 4.2 Update `docker-compose/compose.yaml`
 

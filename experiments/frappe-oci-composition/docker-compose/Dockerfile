@@ -101,7 +101,9 @@ EOF
 
 # Install the union into the bench venv (uv only adds what is missing,
 # keeping the base runtime's own resolution intact).
+ARG FRAPPE_BUILD_VERSION=
 ENV VIRTUAL_ENV=/home/frappe/frappe-bench/env
+ENV FRAPPE_BUILD_VERSION=${FRAPPE_BUILD_VERSION}
 RUN uv pip install --no-cache-dir -r /deps/requirements.txt
 
 # Expose the image-mounted apps to the interpreter, derived from the /deps
@@ -117,51 +119,12 @@ EOF
 RUN mkdir -p /home/frappe/frappe-bench/logs /home/frappe/logs \
     && chown frappe:frappe /home/frappe/frappe-bench/logs /home/frappe/logs
 
-# Asset stitching (issue #3): the composition never builds assets. The app
-# artifact ships its own prebuilt assets/ plus an asset-map snapshot
-# (assets.json); here we merge that snapshot on top of the frappe base map
-# baked in the runtime image at /opt/defaults/assets.json. Requires the
-# artifact to carry assets.json (true for every app that builds assets).
-COPY --from=src /opt/frappe/apps/${APP}/assets.json /tmp/manifests/${APP}.json
-
-RUN python3 - <<'EOF'
-import glob, json
-merged = json.load(open("/opt/defaults/assets.json"))
-for path in sorted(glob.glob("/tmp/manifests/*.json")):
-    merged.update(json.load(open(path)))
-json.dump(merged, open("/opt/defaults/assets.json", "w"), indent=1)
-
-# The frappe base manifest can drift from the dist tree actually baked in the
-# runtime image (rebuilt bundles change their content hash while the baked
-# snapshot keeps the old one). Reconcile: any frappe entry whose target file
-# is missing is re-pointed at the real hashed file of the same bundle in the
-# image's dist tree. App snapshots are authoritative and left untouched.
-import glob, json, os
-merged = json.load(open("/opt/defaults/assets.json"))
-frappe_root = "/home/frappe/frappe-bench/apps/frappe/frappe/public/dist"
-changed = 0
-for key, val in list(merged.items()):
-    if not val.startswith("/assets/frappe/dist/"):
-        continue
-    rel = val[len("/assets/frappe/"):]
-    if os.path.exists(f"/home/frappe/frappe-bench/apps/frappe/frappe/public/{rel}"):
-        continue
-    stem, ext = key.rsplit(".", 1)
-    candidates = [
-        p for p in glob.glob(f"{frappe_root}/{ext}/{stem}.*.{ext}")
-        if not p.endswith(".map")
-    ]
-    if len(candidates) == 1:
-        merged[key] = "/assets/frappe/dist/%s/%s" % (
-            ext, os.path.basename(candidates[0]))
-        changed += 1
-    elif not candidates:
-        raise SystemExit(f"bundle {key}: no built file in dist, refusing to ship")
-    else:
-        raise SystemExit(f"bundle {key}: ambiguous dist candidates {candidates}")
-json.dump(merged, open("/opt/defaults/assets.json", "w"), indent=1)
-print(f"reconciled {changed} stale frappe bundle hashes")
-EOF
+# No asset manifest is stitched or reconciled here. Bundle filenames are
+# unhashed (frappe esbuild entryNames "[dir]/[name]", see
+# patches/0007-drop-assets-json-manifest.patch), so the logical path frappe
+# emits is exactly the path on disk in the app asset mounts: nothing to merge
+# at build time, no content hash to reconcile. Cache-busting is the release
+# version bundled below.
 
 USER frappe
 WORKDIR /home/frappe/frappe-bench
@@ -191,7 +154,9 @@ EOF
 
 # Install the union into the bench venv (uv only adds what is missing,
 # keeping the base runtime's own resolution intact).
+ARG FRAPPE_BUILD_VERSION=
 ENV VIRTUAL_ENV=/home/frappe/frappe-bench/env
+ENV FRAPPE_BUILD_VERSION=${FRAPPE_BUILD_VERSION}
 RUN uv pip install --no-cache-dir -r /deps/requirements.txt
 
 # Expose the image-mounted apps to the interpreter. The base venv resolves
@@ -212,60 +177,18 @@ RUN mkdir -p /home/frappe/frappe-bench/logs /home/frappe/logs \
 USER root
 
 # =============================================================================
-# Asset stitching (issue #3): the composition never builds assets. Each app
-# artifact ships its own prebuilt assets/ plus an asset-map snapshot
-# (apps/<app>/assets.json); here we compose the bench asset map by merging
-# every app snapshot on top of the frappe base map baked in the runtime image
-# at /opt/defaults/assets.json. init.sh copies this manifest to the sites
-# volume on every boot (so stale volumes get refreshed), while the asset
-# FILES are copied into the sites volume once at first boot by the init
-# service (from each app image mount's assets/ or, for unbuilt apps, the
-# package's public/ directory).
+# No asset manifest is stitched or reconciled here. Bundle filenames are
+# unhashed (frappe esbuild entryNames "[dir]/[name]", see
+# patches/0007-drop-assets-json-manifest.patch), so the logical path frappe
+# emits is exactly the path on disk: /assets/<app>/... resolves straight
+# against the per-app asset mounts (and the sites volume for frappe). There is
+# nothing to merge at build time and no content hash to reconcile, and init.sh
+# no longer seeds any manifest.
+#
+# The asset FILES themselves are still copied into the sites volume on first
+# boot by the init service (from each app image mount's assets/ dir, or the
+# package's public/ tree for unbuilt apps).
 # =============================================================================
-COPY --from=src-erpnext /opt/frappe/apps/erpnext/assets.json /tmp/manifests/erpnext.json
-COPY --from=src-hrms /opt/frappe/apps/hrms/assets.json /tmp/manifests/hrms.json
-COPY --from=src-eps /opt/frappe/apps/eps/assets.json /tmp/manifests/eps.json
-
-# Merge every app snapshot over the frappe base manifest. The fayolex apps
-# are unbuilt (no bundles), ship no snapshot and contribute nothing.
-RUN python3 - <<'EOF'
-import glob, json
-merged = json.load(open("/opt/defaults/assets.json"))
-for path in sorted(glob.glob("/tmp/manifests/*.json")):
-    merged.update(json.load(open(path)))
-json.dump(merged, open("/opt/defaults/assets.json", "w"), indent=1)
-
-# The frappe base manifest can drift from the dist tree actually baked in the
-# runtime image (rebuilt bundles change their content hash while the baked
-# snapshot keeps the old one). Reconcile: any frappe entry whose target file
-# is missing is re-pointed at the real hashed file of the same bundle in the
-# image's dist tree. App snapshots are authoritative and left untouched.
-import glob, json, os
-merged = json.load(open("/opt/defaults/assets.json"))
-frappe_root = "/home/frappe/frappe-bench/apps/frappe/frappe/public/dist"
-changed = 0
-for key, val in list(merged.items()):
-    if not val.startswith("/assets/frappe/dist/"):
-        continue
-    rel = val[len("/assets/frappe/"):]
-    if os.path.exists(f"/home/frappe/frappe-bench/apps/frappe/frappe/public/{rel}"):
-        continue
-    stem, ext = key.rsplit(".", 1)
-    candidates = [
-        p for p in glob.glob(f"{frappe_root}/{ext}/{stem}.*.{ext}")
-        if not p.endswith(".map")
-    ]
-    if len(candidates) == 1:
-        merged[key] = "/assets/frappe/dist/%s/%s" % (
-            ext, os.path.basename(candidates[0]))
-        changed += 1
-    elif not candidates:
-        raise SystemExit(f"bundle {key}: no built file in dist, refusing to ship")
-    else:
-        raise SystemExit(f"bundle {key}: ambiguous dist candidates {candidates}")
-json.dump(merged, open("/opt/defaults/assets.json", "w"), indent=1)
-print(f"reconciled {changed} stale frappe bundle hashes")
-EOF
 
 USER frappe
 WORKDIR /home/frappe/frappe-bench
