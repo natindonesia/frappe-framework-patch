@@ -62,7 +62,7 @@ docker run --rm frappe:latest bash -c '
   # Hashed bundle + static paths must serve 200.
   for path in \
     "$BUNDLE_URL" \
-    /assets/frappe/css/frappe.css \
+    /assets/frappe/css/tree.css \
     /assets/frappe/node_modules/ace-builds/src-min-noconflict/ace.js ; do
     CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080$path")
     test "$CODE" = 200 || { echo "Unexpected $path -> HTTP $CODE"; exit 1; }
