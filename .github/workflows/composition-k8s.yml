@@ -187,16 +187,18 @@ jobs:
             env/bin/python -c "import frappe; print(\"frappe\", frappe.__version__)"
           '
 
-      - name: Enforce unhashed asset contract via nginx (no assets.json)
+      - name: Enforce hashed asset contract via nginx (no assets.json)
         run: |
           # nginx reads assets from the sites PVC + the read-only app image mounts.
-          # Bundle filenames are unhashed (esbuild entryNames "[dir]/[name]", see
-          # patches/0007-drop-assets-json-manifest.patch), so there is no manifest to
-          # parse or reconcile: assert the manifest is gone and that the logical
-          # bundle paths (and the standalone static assets) serve HTTP 2xx.
+          # Bundle filenames are hashed (esbuild entryNames "[dir]/[name].[hash]",
+          # see patches/0007-drop-assets-json-manifest.patch) but no assets.json
+          # manifest ships: python derives the name -> hashed-path map from the
+          # dist trees at runtime. Assert the manifest is gone, every logical
+          # bundle name resolves to exactly one hashed file on disk, and that
+          # hashed file (plus the standalone static assets) serves HTTP 2xx.
           NGINX_POD=$(kubectl -n "$NAMESPACE" get pod -l app=nginx -o jsonpath='{.items[0].metadata.name}')
           kubectl -n "$NAMESPACE" exec -i "$NGINX_POD" -c nginx -- python3 - <<'EOS'
-          import os, subprocess, sys
+          import glob, os, subprocess, sys
           sites = "/home/frappe/frappe-bench/sites"
           manifest = os.path.join(sites, "assets", "assets.json")
           if os.path.lexists(manifest):
@@ -218,50 +220,72 @@ jobs:
               else:
                   print(f"✅ {label} -> {url_path} (HTTP {code})")
 
-          # Frappe links these by their logical path; with unhashed bundle
-          # filenames the logical path must be exactly the served path.
-          # Every composition app's known bundles are asserted: the map is
+          def resolve(app, kind, name):
+              # esbuild emits "<name>.<hash>.<ext>"; .map files are excluded so
+              # exactly one bundle file must match, exactly like the runtime map.
+              pattern = os.path.join(sites, "assets", app, "dist", kind,
+                                     f"{name}.*.{{js,css}}")
+              matches = [p for p in glob.glob(pattern) if not p.endswith(".map")]
+              return matches
+
+          # Every composition app's known bundles are asserted: the runtime map is
           # derived from the dist trees, so a name can only 404 if the app
           # artifact actually failed to ship that bundle.
           bundle_checks = [
-              ("frappe", "/assets/frappe/dist/js/desk.bundle.js"),
-              ("frappe", "/assets/frappe/dist/css/desk.bundle.css"),
-              ("frappe", "/assets/frappe/dist/css/login.bundle.css"),
-              ("frappe", "/assets/frappe/dist/css/print.bundle.css"),
-              ("frappe", "/assets/frappe/dist/js/web.bundle.js"),
-              ("frappe", "/assets/frappe/dist/css/website.bundle.css"),
-              ("frappe", "/assets/frappe/dist/js/form.bundle.js"),
-              ("frappe", "/assets/frappe/dist/js/controls.bundle.js"),
-              ("frappe", "/assets/frappe/dist/js/list.bundle.js"),
-              ("frappe", "/assets/frappe/dist/js/libs.bundle.js"),
-              ("frappe", "/assets/frappe/css/frappe.css"),
-              ("frappe", "/assets/frappe/node_modules/ace-builds/src-min-noconflict/ace.js"),
-              ("erpnext", "/assets/erpnext/dist/js/erpnext.bundle.js"),
-              ("erpnext", "/assets/erpnext/dist/css/erpnext.bundle.css"),
-              ("erpnext", "/assets/erpnext/dist/js/erpnext-web.bundle.js"),
-              ("erpnext", "/assets/erpnext/dist/css/erpnext-web.bundle.css"),
-              ("erpnext", "/assets/erpnext/dist/css/erpnext_email.bundle.css"),
-              ("erpnext", "/assets/erpnext/dist/js/bank-reconciliation-tool.bundle.js"),
-              ("erpnext", "/assets/erpnext/dist/js/point-of-sale.bundle.js"),
-              ("hrms", "/assets/hrms/dist/js/hrms.bundle.js"),
-              ("hrms", "/assets/hrms/dist/css/hrms.bundle.css"),
-              ("hrms", "/assets/hrms/dist/js/hierarchy-chart.bundle.js"),
-              ("hrms", "/assets/hrms/dist/js/performance.bundle.js"),
-              ("hrms", "/assets/hrms/dist/js/interview.bundle.js"),
-              ("eps", "/assets/eps/dist/js/eps.bundle.js"),
-              ("eps", "/assets/eps/dist/css/eps.bundle.css"),
+              ("frappe", "js", "desk.bundle"),
+              ("frappe", "css", "desk.bundle"),
+              ("frappe", "css", "login.bundle"),
+              ("frappe", "css", "print.bundle"),
+              ("frappe", "js", "web.bundle"),
+              ("frappe", "css", "website.bundle"),
+              ("frappe", "js", "form.bundle"),
+              ("frappe", "js", "controls.bundle"),
+              ("frappe", "js", "list.bundle"),
+              ("frappe", "js", "libs.bundle"),
+              ("erpnext", "js", "erpnext.bundle"),
+              ("erpnext", "css", "erpnext.bundle"),
+              ("erpnext", "js", "erpnext-web.bundle"),
+              ("erpnext", "css", "erpnext-web.bundle"),
+              ("erpnext", "css", "erpnext_email.bundle"),
+              ("erpnext", "js", "bank-reconciliation-tool.bundle"),
+              ("erpnext", "js", "point-of-sale.bundle"),
+              ("hrms", "js", "hrms.bundle"),
+              ("hrms", "css", "hrms.bundle"),
+              ("hrms", "js", "hierarchy-chart.bundle"),
+              ("hrms", "js", "performance.bundle"),
+              ("hrms", "js", "interview.bundle"),
+              ("eps", "js", "eps.bundle"),
+              ("eps", "css", "eps.bundle"),
               # RTL css bundles are keyed rtl_<name> and served from css-rtl/;
               # frappe emits these links for rtl locales, so they must serve too.
-              ("frappe:rtl", "/assets/frappe/dist/css-rtl/desk.bundle.css"),
-              ("frappe:rtl", "/assets/frappe/dist/css-rtl/login.bundle.css"),
-              ("frappe:rtl", "/assets/frappe/dist/css-rtl/website.bundle.css"),
-              ("erpnext:rtl", "/assets/erpnext/dist/css-rtl/erpnext.bundle.css"),
-              ("hrms:rtl", "/assets/hrms/dist/css-rtl/hrms.bundle.css"),
-              ("eps:rtl", "/assets/eps/dist/css-rtl/eps.bundle.css"),
+              ("frappe", "css-rtl", "desk.bundle"),
+              ("frappe", "css-rtl", "login.bundle"),
+              ("frappe", "css-rtl", "website.bundle"),
+              ("erpnext", "css-rtl", "erpnext.bundle"),
+              ("hrms", "css-rtl", "hrms.bundle"),
+              ("eps", "css-rtl", "eps.bundle"),
           ]
-          print(f"Enforcing unhashed bundle contract ({len(bundle_checks)} checks)...")
-          for app, url_path in bundle_checks:
-              check(app, url_path)
+          print(f"Enforcing hashed bundle contract ({len(bundle_checks)} checks)...")
+          for app, kind, name in bundle_checks:
+              matches = resolve(app, kind, name)
+              if len(matches) != 1:
+                  print(f"❌ {app}:{name} ({kind}) matched {len(matches)} files on disk, expected 1")
+                  failed.append((app, name, f"{len(matches)} matches"))
+                  continue
+              check(f"{app}:bundle", "/" + os.path.relpath(matches[0], sites))
+
+          # Unhashed logical paths must NOT be served: the hash segment is the
+          # content contract, so an old cached URL without it should 404.
+          unhashed = "/assets/frappe/dist/js/desk.bundle.js"
+          r = subprocess.run(
+              ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+               f"http://127.0.0.1:8080{unhashed}"], capture_output=True, text=True)
+          code = r.stdout or "000"
+          if code == "200":
+              print(f"❌ unhashed {unhashed} served HTTP 200 - esbuild must emit hashed names")
+              failed.append(("unhashed", unhashed, code))
+          else:
+              print(f"✅ unhashed {unhashed} not served (HTTP {code})")
 
           # Enforce standalone image format contract:
           # Verify known static public assets across all apps return HTTP 2xx via nginx
@@ -282,7 +306,7 @@ jobs:
               for name, p, code in failed:
                   print(f"  {name} ({p}) HTTP {code}")
               sys.exit(1)
-          print("✅ No manifest, and all unhashed bundles + static public assets serve HTTP 2xx through nginx")
+          print("✅ No manifest, and all hashed bundles + static public assets serve HTTP 2xx through nginx")
           EOS
 
       - name: Cleanup cluster
