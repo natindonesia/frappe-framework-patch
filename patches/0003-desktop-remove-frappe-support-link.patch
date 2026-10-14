@@ -1,5 +1,5 @@
 diff --git a/frappe/desk/page/desktop/desktop.js b/frappe/desk/page/desktop/desktop.js
-index b53e7e6..c5fea48 100644
+index b53e7e6a3f..c5fea481b2 100644
 --- a/frappe/desk/page/desktop/desktop.js
 +++ b/frappe/desk/page/desktop/desktop.js
 @@ -559,13 +559,6 @@ class DesktopPage {
