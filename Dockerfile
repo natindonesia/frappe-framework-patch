@@ -276,6 +276,14 @@ RUN su - frappe -c 'export SUBMODULE=/home/frappe/frappe-bench/apps/frappe \
       && export PATCHES_DIR=/tmp/patches \
       && /tmp/scripts/apply-patches.sh' \
     && su - frappe -c 'cd /home/frappe/frappe-bench && bench build --app frappe' \
+    # bench init built assets once with the UNPATCHED esbuild, which wrote
+    # assets.json + assets-rtl.json manifests into sites/assets (their mtime
+    # is the cached bench-init layer's, so the staleness survives cache
+    # restores). Patched esbuild no longer writes them and nothing else
+    # removes them, so drop them here: no manifest may ship in the `latest`
+    # variant (patch 0007 contract, asserted by vanilla-test-nginx.sh).
+    && rm -f /home/frappe/frappe-bench/sites/assets/assets.json \
+      /home/frappe/frappe-bench/sites/assets/assets-rtl.json \
     && rm -rf /tmp/patches /tmp/scripts
 
 # =============================================================================
