@@ -120,11 +120,12 @@ RUN mkdir -p /home/frappe/frappe-bench/logs /home/frappe/logs \
     && chown frappe:frappe /home/frappe/frappe-bench/logs /home/frappe/logs
 
 # No asset manifest is stitched or reconciled here. Bundle filenames are
-# unhashed (frappe esbuild entryNames "[dir]/[name]", see
-# patches/0007-drop-assets-json-manifest.patch), so the logical path frappe
-# emits is exactly the path on disk in the app asset mounts: nothing to merge
-# at build time, no content hash to reconcile. Cache-busting is the release
-# version bundled below.
+# hashed (frappe esbuild entryNames "[dir]/[name].[hash]", see
+# patches/0007-drop-assets-json-manifest.patch), but no assets.json ships:
+# frappe derives the logical name -> hashed path map from the dist trees at
+# runtime, so a key can only resolve to a file really present in the app asset
+# mounts. Nothing to merge or reconcile at build time. Cache-busting is the
+# release version bundled below.
 
 USER frappe
 WORKDIR /home/frappe/frappe-bench
@@ -178,10 +179,11 @@ USER root
 
 # =============================================================================
 # No asset manifest is stitched or reconciled here. Bundle filenames are
-# unhashed (frappe esbuild entryNames "[dir]/[name]", see
-# patches/0007-drop-assets-json-manifest.patch), so the logical path frappe
-# emits is exactly the path on disk: /assets/<app>/... resolves straight
-# against the per-app asset mounts (and the sites volume for frappe). There is
+# hashed (frappe esbuild entryNames "[dir]/[name].[hash]", see
+# patches/0007-drop-assets-json-manifest.patch), but no assets.json ships:
+# frappe derives the logical name -> hashed path map from the dist trees at
+# runtime, so /assets/<app>/... links resolve only to files really present in
+# the per-app asset mounts (and the sites volume for frappe). There is
 # nothing to merge at build time and no content hash to reconcile, and init.sh
 # no longer seeds any manifest.
 #

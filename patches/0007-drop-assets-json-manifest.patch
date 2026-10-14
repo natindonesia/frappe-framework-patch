@@ -1,5 +1,5 @@
 diff --git a/esbuild/esbuild.js b/esbuild/esbuild.js
-index 5f5f805c1a..66d07b78c5 100644
+index 5f5f805c1a..da4890d43b 100644
 --- a/esbuild/esbuild.js
 +++ b/esbuild/esbuild.js
 @@ -66,7 +66,7 @@ const argv = yargs
@@ -19,7 +19,7 @@ index 5f5f805c1a..66d07b78c5 100644
  		console.timeEnd(TOTAL_BUILD_TIME);
  		process.exit(0);
  	}
-@@ -146,51 +145,30 @@ async function execute() {
+@@ -146,51 +145,33 @@ async function execute() {
  }
  
  async function update_assets_json_from_built_assets(apps) {
@@ -47,9 +47,11 @@ index 5f5f805c1a..66d07b78c5 100644
 +async function copy_built_assets(app) {
  	const app_path = path.join(apps_path, app, app);
  	const dist_path = path.join(app_path, "public", "dist");
--	const files = await glob("**/*.bundle.*.{js,css}", { cwd: dist_path });
-+	// Unhashed names: "js/marketplace.bundle.js", "css/desk.bundle.css"
-+	const files = await glob("**/*.bundle.{js,css}", { cwd: dist_path });
++	// Hashed names: "js/marketplace.bundle.6SCSPSGQ.js", "css/desk.bundle.<hash>.css"
++	// (rtl css lands in css-rtl/ with an -rtl suffix inside the hash segment).
++	// The name -> path map python derives from this tree reproduces the old
++	// assets.json key/value pairs exactly, from files that provably exist.
+ 	const files = await glob("**/*.bundle.*.{js,css}", { cwd: dist_path });
  	const assets_dist = path.join("assets", app, "dist");
 -	const prefix = path.join("/", assets_dist);
  
@@ -83,19 +85,18 @@ index 5f5f805c1a..66d07b78c5 100644
  	}
  }
  
-@@ -317,7 +295,10 @@ function build_style_files({ files, outdir, rtl_style = false }) {
+@@ -317,6 +298,10 @@ function build_style_files({ files, outdir, rtl_style = false }) {
  function get_build_options(files, outdir, plugins) {
  	return {
  		entryPoints: files,
--		entryNames: "[dir]/[name].[hash]",
-+		// Unhashed on purpose: the logical bundle name is the served filename,
-+		// so nothing needs an assets.json manifest to resolve it.
++		// Hashed filenames: the manifest-style map python derives from the
++		// served tree must point at exactly these files. No assets.json is
++		// written; the map is derived from disk at runtime.
 +		// See patches/0007-drop-assets-json-manifest.patch
-+		entryNames: "[dir]/[name]",
+ 		entryNames: "[dir]/[name].[hash]",
  		target: [ESBUILD_TARGET],
  		outdir,
- 		sourcemap: true,
-@@ -435,12 +416,14 @@ function log_built_assets(results) {
+@@ -435,12 +420,15 @@ function log_built_assets(results) {
  	log(cliui.toString());
  }
  
@@ -104,15 +105,16 @@ index 5f5f805c1a..66d07b78c5 100644
  let prev_assets_json;
  let curr_assets_json;
  
-+// Bundle filenames are unhashed (entryNames is "[dir]/[name]"), so the logical
-+// name maps to a single served path and there is no assets.json manifest to
-+// write. This only tracks what the last build emitted, for the watcher diff.
++// Bundle filenames are hashed (entryNames "[dir]/[name].[hash]"), but no
++// assets.json is written: python derives the manifest-style map from the
++// served tree at runtime (see patches/0007-drop-assets-json-manifest.patch).
++// This only tracks what the last build emitted, for the watcher diff.
  async function write_assets_json(metafile) {
 -	let rtl = false;
  	prev_assets_json = curr_assets_json;
  	let out = {};
  	for (let output in metafile.outputs) {
-@@ -449,20 +432,14 @@ async function write_assets_json(metafile) {
+@@ -449,20 +437,14 @@ async function write_assets_json(metafile) {
  		if (info.entryPoint) {
  			let key = path.basename(info.entryPoint);
  			if (key.endsWith(".css") && asset_path.includes("/css-rtl/")) {
@@ -134,7 +136,7 @@ index 5f5f805c1a..66d07b78c5 100644
  	if (argv["save-metafiles"]) {
  		// use current timestamp in readable formate as a suffix for filename
  		let current_timestamp = new Date().getTime();
-@@ -471,43 +448,11 @@ async function write_assets_json(metafile) {
+@@ -471,43 +453,11 @@ async function write_assets_json(metafile) {
  		log(`Saved metafile as ${metafile_name}`);
  	}
  	return {
@@ -180,10 +182,10 @@ index 5f5f805c1a..66d07b78c5 100644
  	let cwd = process.cwd();
  	let { execSync } = require("child_process");
 diff --git a/frappe/utils/__init__.py b/frappe/utils/__init__.py
-index e6b880d5ca..75b621e5f7 100644
+index e6b880d5ca..47e9293c01 100644
 --- a/frappe/utils/__init__.py
 +++ b/frappe/utils/__init__.py
-@@ -939,33 +939,87 @@ def get_file_size(path, format=False):
+@@ -939,33 +939,93 @@ def get_file_size(path, format=False):
  
  
  def get_build_version():
@@ -225,22 +227,26 @@ index e6b880d5ca..75b621e5f7 100644
 -	def _get_assets():
 -		# get merged assets.json and assets-rtl.json
 -		assets = frappe.parse_json(frappe.read_file("assets/assets.json"))
-+	"""Map a logical bundle name to the path nginx actually serves.
++	"""Map a logical bundle name to the hashed path nginx actually serves.
 +
 +	The sites/assets/assets.json manifest is gone (see
 +	patches/0007-drop-assets-json-manifest.patch): it was stitched from several
 +	container images and could name files the serving nginx never had, which is
 +	how a bundle URL came to 404 in production.
 +
-+	Deriving the map from the asset tree means a name can only resolve to a file
-+	that is really there. Bundle filenames are unhashed, so the logical name of
-+	a bundle is the basename of the served file.
++	Bundle filenames still carry the content hash (esbuild entryNames
++	"[dir]/[name].[hash]"), so the map reproduces the old manifest's key/value
++	pairs - "desk.bundle.js" -> "/assets/frappe/dist/js/desk.bundle.<hash>.js" -
++	by deriving both sides from the dist trees. A key can only resolve to a
++	file that is really there.
 +
 +	Cached as a shared (bench-wide) value in redis; `bench clear-cache` drops it
 +	via frappe.client_cache.clear_cache(). In developer mode always scan fresh -
 +	the watcher rewrites bundles constantly.
 +	"""
-+
+ 
+-		if assets_rtl := frappe.read_file("assets/assets-rtl.json"):
+-			assets.update(frappe.parse_json(assets_rtl))
 +	def _scan_assets():
 +		import glob
 +
@@ -257,15 +263,17 @@ index e6b880d5ca..75b621e5f7 100644
 +				names = os.listdir(path)
 +			except OSError:
 +				continue
- 
--		if assets_rtl := frappe.read_file("assets/assets-rtl.json"):
--			assets.update(frappe.parse_json(assets_rtl))
-+			for name in sorted(names):
-+				if ".bundle." not in name or not name.endswith((".js", ".css")):
-+					continue
 +
-+				# rtl bundles are keyed like their LTR twin, prefixed with rtl_
-+				key = f"rtl_{name}" if kind == "css-rtl" else name
++			for name in sorted(names):
++				# "desk.bundle.<hash>.js" -> key "desk.bundle.js": the logical
++				# name frappe links, exactly like the old assets.json did.
++				# rtl bundles are keyed like their LTR twin, prefixed rtl_.
++				parts = name.split(".")
++				if len(parts) < 4 or ".bundle." not in name or not name.endswith((".js", ".css")):
++					continue
++				key = ".".join(parts[:-2] + [parts[-1]])
++				if kind == "css-rtl":
++					key = f"rtl_{key}"
 +				assets[key] = f"/assets/{app}/dist/{kind}/{name}"
  
  		return assets

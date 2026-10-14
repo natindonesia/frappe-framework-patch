@@ -6,20 +6,31 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # =============================================================================
 # vanilla-test-nginx.sh - smoke test the vanilla (single-app) Frappe image.
 #
-# Bundle filenames are unhashed (frappe esbuild entryNames "[dir]/[name]", see
-# patches/0007-drop-assets-json-manifest.patch), so there is no assets.json
-# manifest any more: the logical asset path frappe links to IS the path on disk.
-# Cache-busting is FRAPPE_BUILD_VERSION + revalidation, not content hashes.
-# This asserts exactly that: manifest gone, unhashed bundles serving 200.
+# Bundle filenames are hashed (frappe esbuild entryNames "[dir]/[name].[hash]",
+# see patches/0007-drop-assets-json-manifest.patch) but no assets.json manifest
+# ships: get_assets_json() derives the logical name -> hashed path map from the
+# dist trees at runtime, so a key can only resolve to a file nginx really has.
+# This asserts exactly that: manifest gone, hashed bundles serving 200, and the
+# unhashed logical URL NOT served.
 # =============================================================================
 docker run --rm frappe:latest bash -c '
   set -e
   /usr/local/bin/nginx-entrypoint.sh & pid=$!
   trap "kill $pid 2>/dev/null || true" EXIT
+
+  # Resolve the hashed desk bundle from the served tree (same derivation as
+  # get_assets_json): exactly one "<name>.<hash>.<ext>" match per bundle.
+  resolve() {
+    ls "$1"/"$2".*.js "$1"/"$2".*.css 2>/dev/null | grep -v "\.map$" | head -n 1
+  }
+  BUNDLE=""
   for i in $(seq 1 20); do
-    curl -sf http://127.0.0.1:8080/assets/frappe/dist/js/desk.bundle.js >/dev/null && break
+    BUNDLE=$(resolve sites/assets/frappe/dist/js desk.bundle || true)
+    [ -n "$BUNDLE" ] && break
     sleep 1
   done
+  test -n "$BUNDLE" || { echo "no hashed desk.bundle file in dist tree"; exit 1; }
+  BUNDLE_URL="/${BUNDLE#./}"
 
   # The manifest must be gone from disk ...
   test ! -e sites/assets/assets.json
@@ -27,12 +38,9 @@ docker run --rm frappe:latest bash -c '
   MANIFEST_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/assets/assets.json)
   test "$MANIFEST_CODE" = 404
 
-  # Unhashed bundle + static paths must serve 200.
+  # Hashed bundle + static paths must serve 200.
   for path in \
-    /assets/frappe/dist/js/desk.bundle.js \
-    /assets/frappe/dist/css/desk.bundle.css \
-    /assets/frappe/dist/css/login.bundle.css \
-    /assets/frappe/dist/css/print.bundle.css \
+    "$BUNDLE_URL" \
     /assets/frappe/css/frappe.css \
     /assets/frappe/node_modules/ace-builds/src-min-noconflict/ace.js ; do
     CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080$path")
@@ -40,12 +48,20 @@ docker run --rm frappe:latest bash -c '
     echo "  ok $path (HTTP $CODE)"
   done
 
-  SERVER_HDR=$(curl -sI http://127.0.0.1:8080/assets/frappe/dist/css/desk.bundle.css | tr -d "\r" | awk -F": " "tolower(\$1)==\"server\" {print \$2; exit}")
+  # The unhashed logical URL must NOT be served: the hash segment is the
+  # content contract frappe links to.
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/assets/frappe/dist/js/desk.bundle.js)
+  test "$CODE" != 200 || { echo "unhashed desk.bundle.js unexpectedly served HTTP 200"; exit 1; }
+  echo "  ok unhashed desk.bundle.js not served (HTTP $CODE)"
+
+  SERVER_HDR=$(curl -sI "http://127.0.0.1:8080$BUNDLE_URL" | tr -d "\r" | awk -F": " "tolower(\$1)==\"server\" {print \$2; exit}")
   case "$SERVER_HDR" in nginx*) ;; *) echo "Unexpected Server header: $SERVER_HDR"; exit 1 ;; esac
 
-  # Unhashed filenames must revalidate instead of being cached immutably.
-  CC=$(curl -sI http://127.0.0.1:8080/assets/frappe/dist/css/desk.bundle.css | tr -d "\r" | awk -F": " "tolower(\$1)==\"cache-control\" {print \$2; exit}")
+  # Hashed filenames may be cached immutably by extension; anything else must
+  # at least revalidate. nginx serves /assets with Cache-Control: no-cache,
+  # which is always correct for hashed URLs too.
+  CC=$(curl -sI "http://127.0.0.1:8080$BUNDLE_URL" | tr -d "\r" | awk -F": " "tolower(\$1)==\"cache-control\" {print \$2; exit}")
   case "$CC" in *no-cache*) ;; *) echo "Unexpected Cache-Control: $CC"; exit 1 ;; esac
 
-  echo "Nginx served unhashed bundles, no assets.json (manifest=$MANIFEST_CODE, cache-control=$CC)"
+  echo "Nginx served hashed bundles, no assets.json (manifest=$MANIFEST_CODE, cache-control=$CC)"
 '

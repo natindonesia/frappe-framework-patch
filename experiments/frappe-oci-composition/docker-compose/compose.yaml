@@ -38,9 +38,10 @@ x-frappe-volumes: &frappe-volumes
     read_only: true
 
 # Runtime services — init included — read assets straight off the app mounts
-# (and the sites volume for frappe). Bundle filenames are unhashed, so frappe's
-# logical asset paths resolve to real files: no manifest is built, shipped,
-# parsed or image-mounted.
+# (and the sites volume for frappe). Bundle filenames are hashed but no
+# manifest is built, shipped, parsed or image-mounted: frappe derives the
+# logical name -> hashed path map from the dist trees, so a link can only
+# resolve to a file really present in those mounts.
 x-frappe-volumes-runtime: &frappe-volumes-runtime
   - sites-data:/home/frappe/frappe-bench/sites
   - type: image
