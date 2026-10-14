@@ -30,7 +30,10 @@ docker run --rm frappe:latest bash -c '
     sleep 1
   done
   test -n "$BUNDLE" || { echo "no hashed desk.bundle file in dist tree"; exit 1; }
-  BUNDLE_URL="/${BUNDLE#./}"
+  # nginx serves the sites/assets tree under /assets, so strip the
+  # sites/assets prefix; a /sites/... URL would fall through to the
+  # backend proxy and return 502.
+  BUNDLE_URL="/assets/${BUNDLE#./sites/assets/}"
 
   # nginx is backgrounded and needs a moment to bind; curl exits nonzero
   # (killing the script silently under set -e) if we race it.
