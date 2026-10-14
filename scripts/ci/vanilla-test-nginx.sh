@@ -32,8 +32,17 @@ docker run --rm frappe:latest bash -c '
   test -n "$BUNDLE" || { echo "no hashed desk.bundle file in dist tree"; exit 1; }
   BUNDLE_URL="/${BUNDLE#./}"
 
+  # nginx is backgrounded and needs a moment to bind; curl exits nonzero
+  # (killing the script silently under set -e) if we race it.
+  for i in $(seq 1 30); do
+    curl -s -o /dev/null http://127.0.0.1:8080/ 2>/dev/null && break
+    sleep 1
+  done
+  curl -s -o /dev/null http://127.0.0.1:8080/ 2>/dev/null \
+    || { echo "nginx never came up on 8080"; exit 1; }
+
   # The manifest must be gone from disk ...
-  test ! -e sites/assets/assets.json
+  test ! -e sites/assets/assets.json || { echo "assets.json manifest still present"; exit 1; }
   # ... and 404 over HTTP (nginx `try_files $uri =404`).
   MANIFEST_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/assets/assets.json)
   test "$MANIFEST_CODE" = 404
