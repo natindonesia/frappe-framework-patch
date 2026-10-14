@@ -47,9 +47,12 @@ spec:
                 # self-seed from the image's sites/ content - so the frappe
                 # assets symlink that the base image bakes in must be
                 # recreated here. nginx resolves it through the runtime
-                # image's own apps/frappe tree.
+                # image's own apps/frappe tree. A fresh PVC has no sites/
+                # content at all, so sites/assets must be created first -
+                # otherwise every ln -s below fails with ENOENT.
+                mkdir -p sites/assets
                 rm -rf sites/assets/frappe
-                ln -s "/home/frappe/frappe-bench/apps/frappe/frappe/public" "sites/assets/frappe"
+                ln -sfn "/home/frappe/frappe-bench/apps/frappe/frappe/public" "sites/assets/frappe"
                 for app in $(ls apps | grep -vx frappe); do
                   if ! bench --site "${SITE_NAME}" install-app "$app"; then
                     echo "[init] install-app $app FAILED - continuing without it" >&2
@@ -60,9 +63,9 @@ spec:
                 # assets/ dir (what compose image-mounts via subpath); fall
                 # back to the package's public/ tree for unbuilt apps.
                 if [ -d "apps/$app/assets" ]; then
-                  ln -s "/home/frappe/frappe-bench/apps/$app/assets" "sites/assets/$app"
+                  ln -sfn "/home/frappe/frappe-bench/apps/$app/assets" "sites/assets/$app"
                 else
-                  ln -s "/home/frappe/frappe-bench/apps/$app/$app/public" "sites/assets/$app"
+                  ln -sfn "/home/frappe/frappe-bench/apps/$app/$app/public" "sites/assets/$app"
                 fi
                 done
                 set +x
