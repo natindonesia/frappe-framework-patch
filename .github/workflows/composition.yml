@@ -147,8 +147,11 @@ jobs:
           def resolve(app, kind, name):
               # esbuild emits "<name>.<hash>.<ext>"; .map files are excluded so
               # exactly one bundle file must match, exactly like the runtime map.
+              # NOTE: glob.glob does NOT expand {js,css} braces — the ext is
+              # derived from the kind instead.
+              ext = "js" if kind == "js" else "css"
               pattern = os.path.join(sites, "assets", app, "dist", kind,
-                                     f"{name}.*.{{js,css}}")
+                                     f"{name}.*.{ext}")
               matches = [p for p in glob.glob(pattern) if not p.endswith(".map")]
               return matches
 
