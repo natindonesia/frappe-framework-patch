@@ -33,7 +33,9 @@ docker run --rm frappe:latest bash -c '
   # nginx serves the sites/assets tree under /assets, so strip the
   # sites/assets prefix; a /sites/... URL would fall through to the
   # backend proxy and return 502.
-  BUNDLE_URL="/assets/${BUNDLE#./sites/assets/}"
+  BUNDLE=${BUNDLE#./}
+  BUNDLE=${BUNDLE#sites/assets/}
+  BUNDLE_URL="/assets/$BUNDLE"
 
   # nginx is backgrounded and needs a moment to bind; curl exits nonzero
   # (killing the script silently under set -e) if we race it.
