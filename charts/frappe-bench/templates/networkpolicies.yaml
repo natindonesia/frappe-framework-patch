@@ -318,4 +318,44 @@ spec:
       ports:
         - protocol: TCP
           port: {{ $db }}
+{{- if .Values.redis.enabled }}
+---
+# 8) Redis ingress isolation
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-ingress
+  namespace: {{ include "frappe-bench.namespace" . }}
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: web
+        - podSelector:
+            matchLabels:
+              app: socketio
+        - podSelector:
+            matchLabels:
+              app: scheduler
+        {{- range $workerNames }}
+        - podSelector:
+            matchLabels:
+              app: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $cache }}
+    - from:
+        - ipBlock:
+            cidr: {{ $np.nodeCidr }}
+      ports:
+        - protocol: TCP
+          port: {{ $cache }}
+{{- end }}
 {{- end }}
