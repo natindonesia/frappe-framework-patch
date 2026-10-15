@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: nginx
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx
+  ports:
+    - name: http
+      port: {{ .Values.nginx.servicePort }}
+      targetPort: {{ .Values.nginx.servicePort }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: nginx
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.nginx.replicas }}
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      {{- include "frappe-bench.podDefaults" . | nindent 6 }}
+      containers:
+        - name: nginx
+          image: {{ printf "%s:%s" .Values.images.nginx.repository .Values.images.nginx.tag }}
+          imagePullPolicy: {{ .Values.images.nginx.pullPolicy | default "IfNotPresent" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            {{- toYaml .Values.nginx.resources | nindent 12 }}
+          command: ["/usr/local/bin/nginx-entrypoint.sh"]
+          envFrom:
+            - configMapRef:
+                name: frappe-env
+          env:
+            - name: NGINX_OTEL_ENDPOINT
+              value: "otel-collector:4317"
+            - name: OTEL_SERVICE_NAME
+              value: {{ printf "%s-nginx" (include "frappe-bench.namespace" .) | quote }}
+          ports:
+            - containerPort: {{ .Values.nginx.servicePort }}
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /api/method/ping
+              port: {{ .Values.nginx.servicePort }}
+              httpHeaders:
+                - name: Host
+                  value: {{ include "frappe-bench.primaryHost" . }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /api/method/ping
+              port: {{ .Values.nginx.servicePort }}
+              httpHeaders:
+                - name: Host
+                  value: {{ include "frappe-bench.primaryHost" . }}
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+              readOnly: true
+            {{- include "frappe-bench.appVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "frappe-bench.appVolumes" . | nindent 8 }}
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: {{ include "frappe-bench.sitesClaim" . }}
+            readOnly: true

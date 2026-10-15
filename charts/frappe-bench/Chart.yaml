@@ -1,0 +1,18 @@
+apiVersion: v2
+name: frappe-bench
+description: >-
+  Generic Frappe/ERPNext bench for the Gcore GitOps tree: an immutable runtime
+  image (Granian WSGI + socketio + RQ workers + scheduler) over a shared
+  sites PVC, with app code bind-mounted from standalone OCI images, an nginx
+  edge, a per-namespace OTLP relay collector, and one HTTPRoute per site.
+  The database and cache are referenced by service name only (bring your own
+  MariaDB operator / Redis).
+type: application
+version: 0.1.0
+appVersion: "1"
+kubeVersion: ">=1.28.0-0"
+keywords:
+  - frappe
+  - erpnext
+  - crm
+  - bench

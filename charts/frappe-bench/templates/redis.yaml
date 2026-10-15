@@ -1,0 +1,65 @@
+{{- if .Values.redis.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: redis
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: {{ .Values.backend.redis.port }}
+      targetPort: {{ .Values.backend.redis.port }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: redis
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      {{- include "frappe-bench.podDefaults" . | nindent 6 }}
+      containers:
+        - name: redis
+          image: {{ printf "%s:%s" .Values.images.redis.repository .Values.images.redis.tag }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          ports:
+            - containerPort: {{ .Values.backend.redis.port }}
+              name: redis
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+{{- end }}

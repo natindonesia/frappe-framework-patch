@@ -1,0 +1,186 @@
+# Default values for the generic frappe-bench chart.
+#
+# The chart renders the *application tier* only: web (Granian), socketio,
+# RQ workers, scheduler, nginx edge, a local OTLP relay collector, the shared
+# sites PVC, and one HTTPRoute per site. The database and cache are addressed
+# by Service name (see `backend`) and are expected to be provided separately
+# (e.g. a MariaDB operator CR); nothing here creates them.
+
+# Image pull secrets applied to every pod.
+imagePullSecrets:
+  - name: natindonesia
+
+# The immutable runtime image: every long-lived process runs the same code.
+runtime:
+  repository: ghcr.io/natindonesia/fayolex-working-staging-runtime
+  tag: latest
+  pullPolicy: Always
+
+# Frappe apps shipped as standalone OCI images and bind-mounted read-only into
+# apps/<name> from subPath `opt/frappe/apps/<name>` (the shared build layout).
+# `primary` marks the app whose package is imported first; the rest just have
+# their directory on PYTHONPATH. Order matters for PYTHONPATH.
+apps:
+  - name: frappe
+    primary: true
+    image:
+      repository: ghcr.io/natindonesia/fayolex-working-staging-frappe
+      tag: latest-standalone
+      pullPolicy: IfNotPresent
+  - name: crm
+    primary: false
+    image:
+      repository: ghcr.io/natindonesia/crm
+      tag: latest-standalone
+      pullPolicy: IfNotPresent
+
+# Edge + collector + cache images.
+images:
+  nginx:
+    repository: ghcr.io/natindonesia/frappe
+    tag: latest-granian
+    pullPolicy: Always
+  redis:
+    repository: redis
+    tag: 7-alpine
+  otelCollector:
+    repository: otel/opentelemetry-collector-contrib
+    tag: 0.161.0
+
+# Sites served by this bench. Each gets an HTTPRoute on the shared Gateway.
+# `name` is the site directory (hostname) and the Host the probes send.
+sites:
+  - name: dev.natracker.com
+    gateway:
+      name: grafana
+      namespace: observability
+      sectionName: demo-natracker
+
+# Shared sites/data volume. One PVC, read-write by the runtime, read-only by
+# nginx/migrate.
+sitesStorage:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: ssd-hiiops
+  size: 10Gi
+  # Existing PVC name to reuse (empty = create `<release>-sites-data`).
+  existingClaim: sites-data
+
+# Backing services, addressed by Service name in this namespace.
+backend:
+  db:
+    host: mariadb
+    port: 3306
+  redis:
+    host: redis
+    port: 6379
+
+# Deploy a single-node Redis for cache/queue/pub-sub. Set false to use an
+# external/operator-managed cache instead.
+redis:
+  enabled: true
+
+# Local OTLP relay: forwards traces/metrics/logs to the in-cluster otel-gateway.
+otel:
+  enabled: true
+  # Central gateway OTLP/HTTP endpoint.
+  gatewayEndpoint: http://otel-gateway.observability.svc.cluster.local:4318
+  # Secret (created out-of-band, never in Git) holding the writer bearer token.
+  writerTokenSecret:
+    name: otel-writer-token
+    key: token
+  # Resource attributes stamped on every signal.
+  namespace: ""            # default: .Release.Namespace
+  environment: ""          # default: derived from the namespace suffix
+  hostName: frankfurt-2
+  serverRegion: frankfurt-2
+
+# NetworkPolicy guardrails. Cilium enforces these. CIDRs are cluster-specific
+# and default to the Gcore Frankfurt layout.
+networkPolicy:
+  enabled: true
+  podCidr: 172.16.0.0/18
+  serviceCidr: 172.24.0.0/18
+  nodeCidr: 192.168.10.0/24
+  nodeLocalDnsVip: 169.254.20.10/32
+  gatewayNamespace: envoy-gateway-system
+  # Extra pod labels used to select the backing MariaDB pods (operator-managed
+  # MariaDBs carry their own labels; default matches a plain `app: mariadb`).
+  mariadbPodLabels:
+    app: mariadb
+
+# Per-process tuning.
+web:
+  replicas: 2
+  servicePort: 8000
+  args:
+    - >-
+      cd /home/frappe/frappe-bench/sites && . ../env/bin/activate && exec granian
+      --interface wsgi --host 0.0.0.0 --port 8000 --workers 2 --blocking-threads 4
+      frappe.otel_wsgi:application
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  otelFrappeDbStatements: "0"
+
+socketio:
+  replicas: 1
+  servicePort: 9000
+  args:
+    - >-
+      cd /home/frappe/frappe-bench && . env/bin/activate && exec node
+      apps/frappe/socketio.js
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# RQ worker queues keyed by name; each becomes Deployment `worker-<name>`.
+workers:
+  default:
+    replicas: 1
+    args:
+      - >-
+        cd /home/frappe/frappe-bench/sites && . ../env/bin/activate && exec python -c
+        "from frappe.otel import boot; boot(); import runpy, sys; sys.argv=[\"bench\", \"frappe\", \"worker\"];
+        runpy.run_module(\"frappe.utils.bench_helper\", run_name=\"__main__\")"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+
+scheduler:
+  replicas: 1
+  args:
+    - >-
+      cd /home/frappe/frappe-bench && . env/bin/activate && python -c
+      "from frappe.otel import boot; boot()" && exec bench schedule
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+nginx:
+  replicas: 1
+  servicePort: 8080
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  # Request timeout on the non-socket.io route.
+  requestTimeout: 60s
+
+# Compiled Python: which app the runtime imports first. Defaults to the
+# `primary` app above.

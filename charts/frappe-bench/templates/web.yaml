@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: web
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: {{ .Values.web.servicePort }}
+      targetPort: {{ .Values.web.servicePort }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: web
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      {{- include "frappe-bench.podDefaults" . | nindent 6 }}
+      securityContext:
+        sysctls:
+          - name: net.ipv4.ip_local_port_range
+            value: "1024 65535"
+          - name: net.ipv4.tcp_fin_timeout
+            value: "10"
+      containers:
+        - name: web
+          image: {{ printf "%s:%s" .Values.runtime.repository .Values.runtime.tag }}
+          imagePullPolicy: {{ .Values.runtime.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          command: ["/bin/bash", "-c"]
+          args:
+            {{- toYaml .Values.web.args | nindent 12 }}
+          env:
+            - name: PYTHONPATH
+              value: {{ include "frappe-bench.pythonPath" . | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4318"
+            - name: OTEL_SERVICE_NAME
+              value: {{ printf "%s-web" (include "frappe-bench.namespace" .) | quote }}
+            - name: OTEL_FRAPPE_DB_STATEMENTS
+              value: {{ .Values.web.otelFrappeDbStatements | quote }}
+          ports:
+            - containerPort: {{ .Values.web.servicePort }}
+              name: http
+          startupProbe:
+            httpGet:
+              path: /api/method/ping
+              port: {{ .Values.web.servicePort }}
+              httpHeaders:
+                - name: Host
+                  value: {{ include "frappe-bench.primaryHost" . }}
+            periodSeconds: 1
+            timeoutSeconds: 1
+            failureThreshold: 30
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sleep", "5"]
+          readinessProbe:
+            httpGet:
+              path: /api/method/ping
+              port: {{ .Values.web.servicePort }}
+              httpHeaders:
+                - name: Host
+                  value: {{ include "frappe-bench.primaryHost" . }}
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 2
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+            {{- include "frappe-bench.appVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "frappe-bench.appVolumes" . | nindent 8 }}
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: {{ include "frappe-bench.sitesClaim" . }}

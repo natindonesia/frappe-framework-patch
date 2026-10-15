@@ -1,0 +1,51 @@
+{{- range $name, $w := .Values.workers }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-{{ $name }}
+  namespace: {{ include "frappe-bench.namespace" $ }}
+  labels:
+    app: worker-{{ $name }}
+    {{- include "frappe-bench.labels" $ | nindent 4 }}
+spec:
+  replicas: {{ $w.replicas }}
+  selector:
+    matchLabels:
+      app: worker-{{ $name }}
+  template:
+    metadata:
+      labels:
+        app: worker-{{ $name }}
+    spec:
+      {{- include "frappe-bench.podDefaults" $ | nindent 6 }}
+      containers:
+        - name: worker
+          image: {{ printf "%s:%s" $.Values.runtime.repository $.Values.runtime.tag }}
+          imagePullPolicy: {{ $.Values.runtime.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            {{- toYaml $w.resources | nindent 12 }}
+          command: ["/bin/bash", "-c"]
+          args:
+            {{- toYaml $w.args | nindent 12 }}
+          env:
+            - name: PYTHONPATH
+              value: {{ include "frappe-bench.pythonPath" $ | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4318"
+            - name: OTEL_SERVICE_NAME
+              value: {{ printf "%s-worker-%s" (include "frappe-bench.namespace" $) $name | quote }}
+            - name: OTEL_FRAPPE_DB_STATEMENTS
+              value: "0"
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+            {{- include "frappe-bench.appVolumeMounts" $ | nindent 12 }}
+      volumes:
+        {{- include "frappe-bench.appVolumes" $ | nindent 8 }}
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: {{ include "frappe-bench.sitesClaim" $ }}
+---
+{{- end }}

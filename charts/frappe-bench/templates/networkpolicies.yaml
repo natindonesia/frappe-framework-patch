@@ -1,0 +1,321 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- $web := .Values.web.servicePort }}
+{{- $sock := .Values.socketio.servicePort }}
+{{- $nginx := .Values.nginx.servicePort }}
+{{- $db := .Values.backend.db.port }}
+{{- $cache := .Values.backend.redis.port }}
+{{- $workerNames := list }}
+{{- range $n, $_ := .Values.workers }}{{ $workerNames = append $workerNames (printf "worker-%s" $n) }}{{ end }}
+# 1) Default deny all ingress and egress in namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ include "frappe-bench.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# 2) DNS egress for all pods in namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: {{ include "frappe-bench.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: node-local-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: {{ $np.nodeLocalDnsVip }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: {{ $np.nodeCidr }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# 3) Nginx ingress and egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nginx-policy
+  namespace: {{ include "frappe-bench.namespace" . }}
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.gatewayNamespace }}
+      ports:
+        - protocol: TCP
+          port: {{ $nginx }}
+    - from:
+        - ipBlock:
+            cidr: {{ $np.nodeCidr }}
+      ports:
+        - protocol: TCP
+          port: {{ $nginx }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: web
+      ports:
+        - protocol: TCP
+          port: {{ $web }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+# 4) Web application ingress and egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-policy
+  namespace: {{ include "frappe-bench.namespace" . }}
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: nginx
+      ports:
+        - protocol: TCP
+          port: {{ $web }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: socketio
+      ports:
+        - protocol: TCP
+          port: {{ $web }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 9090
+    - from:
+        - ipBlock:
+            cidr: {{ $np.nodeCidr }}
+      ports:
+        - protocol: TCP
+          port: {{ $web }}
+        - protocol: TCP
+          port: 9090
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.mariadbPodLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $db }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: {{ $cache }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4318
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - {{ $np.podCidr }}
+              - {{ $np.serviceCidr }}
+              - {{ $np.nodeCidr }}
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# 5) SocketIO ingress and egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: socketio-policy
+  namespace: {{ include "frappe-bench.namespace" . }}
+spec:
+  podSelector:
+    matchLabels:
+      app: socketio
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.gatewayNamespace }}
+      ports:
+        - protocol: TCP
+          port: {{ $sock }}
+    - from:
+        - ipBlock:
+            cidr: {{ $np.nodeCidr }}
+      ports:
+        - protocol: TCP
+          port: {{ $sock }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: {{ $cache }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: web
+      ports:
+        - protocol: TCP
+          port: {{ $web }}
+---
+# 6) Background workers and scheduler egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: workers-scheduler-policy
+  namespace: {{ include "frappe-bench.namespace" . }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          {{- range $workerNames }}
+          - {{ . }}
+          {{- end }}
+          - scheduler
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.mariadbPodLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $db }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: {{ $cache }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4318
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - {{ $np.podCidr }}
+              - {{ $np.serviceCidr }}
+              - {{ $np.nodeCidr }}
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# 7) Database ingress isolation
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mariadb-ingress
+  namespace: {{ include "frappe-bench.namespace" . }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $np.mariadbPodLabels | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: web
+        - podSelector:
+            matchLabels:
+              app: scheduler
+        {{- range $workerNames }}
+        - podSelector:
+            matchLabels:
+              app: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $db }}
+    - from:
+        - ipBlock:
+            cidr: {{ $np.nodeCidr }}
+      ports:
+        - protocol: TCP
+          port: {{ $db }}
+{{- end }}

@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: socketio
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: socketio
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: socketio
+  ports:
+    - name: socketio
+      port: {{ .Values.socketio.servicePort }}
+      targetPort: {{ .Values.socketio.servicePort }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: socketio
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: socketio
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.socketio.replicas }}
+  selector:
+    matchLabels:
+      app: socketio
+  template:
+    metadata:
+      labels:
+        app: socketio
+    spec:
+      {{- include "frappe-bench.podDefaults" . | nindent 6 }}
+      containers:
+        - name: socketio
+          image: {{ printf "%s:%s" .Values.runtime.repository .Values.runtime.tag }}
+          imagePullPolicy: {{ .Values.runtime.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            {{- toYaml .Values.socketio.resources | nindent 12 }}
+          command: ["/bin/bash", "-c"]
+          args:
+            {{- toYaml .Values.socketio.args | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.socketio.servicePort }}
+              name: socketio
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+      volumes:
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: {{ include "frappe-bench.sitesClaim" . }}

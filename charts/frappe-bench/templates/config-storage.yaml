@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frappe-env
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+data:
+  BACKEND: {{ printf "web:%v" .Values.web.servicePort | quote }}
+  SOCKETIO: {{ printf "socketio:%v" .Values.socketio.servicePort | quote }}
+  UPSTREAM_REAL_IP_ADDRESS: "127.0.0.1"
+  FRAPPE_SITE_NAME_HEADER: "$host"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "frappe-bench.sitesClaim" . }}
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.sitesStorage.accessModes | nindent 4 }}
+  storageClassName: {{ .Values.sitesStorage.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.sitesStorage.size }}

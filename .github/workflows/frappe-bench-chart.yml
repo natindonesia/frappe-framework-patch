@@ -1,0 +1,140 @@
+name: frappe-bench chart
+
+# Packages the shared platform chart under charts/frappe-bench and publishes it
+# to GHCR as a PUBLIC OCI artifact:
+#
+#   oci://ghcr.io/natindonesia/charts/frappe-bench
+#
+# Argo CD Applications reference it as
+#   spec.source: { repoURL: ghcr.io/natindonesia/charts, chart: frappe-bench }
+# (the gcore-gitops validator resolves the bare host to oci:// and templates it).
+# The package must be public so Argo CD / Devtron can pull it anonymously.
+#
+# Bump `version` in charts/frappe-bench/Chart.yaml to publish a new release;
+# artifacts are immutable, so re-pushing an existing version fails loudly.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'charts/frappe-bench/**'
+      - '.github/workflows/frappe-bench-chart.yml'
+  pull_request:
+    paths:
+      - 'charts/frappe-bench/**'
+      - '.github/workflows/frappe-bench-chart.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: frappe-bench-chart-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  CHART_DIR: charts/frappe-bench
+  CHART_NAME: frappe-bench
+  CHART_OCI: ghcr.io/natindonesia/charts
+  HELM_VERSION: v3.16.4
+
+jobs:
+  validate:
+    name: Lint chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install helm
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+            | tar -xz -C /tmp
+          install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+          helm version
+
+      - name: helm lint
+        run: helm lint "${CHART_DIR}"
+
+      - name: helm template (sanity render)
+        run: |
+          set -euo pipefail
+          helm template ci "${CHART_DIR}" -n ci-lint >/dev/null
+          echo "chart renders clean"
+
+  publish:
+    name: Publish to GHCR (public)
+    needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install helm
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+            | tar -xz -C /tmp
+          install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+          helm version
+
+      - name: Read chart version
+        id: chart
+        run: |
+          set -euo pipefail
+          version="$(helm show chart "${CHART_DIR}" | awk '/^version:/{print $2}')"
+          [ -n "$version" ] || { echo "::error::no version in ${CHART_DIR}/Chart.yaml"; exit 1; }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Package: ${CHART_OCI}/${CHART_NAME}:${version}"
+
+      - name: Log in to GHCR
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login "${REGISTRY}" --username "${{ github.actor }}" --password-stdin
+
+      - name: helm package
+        run: helm package "${CHART_DIR}" --destination /tmp/chart
+
+      - name: helm push
+        run: |
+          set -euo pipefail
+          helm push "/tmp/chart/${CHART_NAME}-${{ steps.chart.outputs.version }}.tgz" "oci://${CHART_OCI}"
+
+      # A freshly pushed GHCR package is private by default. Flip the OCI
+      # package (named "charts/frappe-bench" — the path after the owner) to
+      # public so Argo CD / Devtron can pull without credentials. PACKAGES_ADMIN
+      # (a fine-grained PAT with packages:write) is used when present because a
+      # repo-scoped GITHUB_TOKEN cannot always change package visibility.
+      - name: Make package public
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGES_ADMIN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pkg="$(printf '%s' "charts/${CHART_NAME}" | sed 's|/|%2F|g')"
+          if gh api --method PATCH "orgs/natindonesia/packages/container/${pkg}" \
+               -f visibility=public >/dev/null 2>&1; then
+            echo "Package charts/${CHART_NAME} is public."
+          else
+            echo "::warning::Could not set visibility automatically. Set it once in" \
+                 "GitHub -> Packages -> charts/${CHART_NAME} -> Package settings -> Public" \
+                 "(or set repo secret PACKAGES_ADMIN)."
+          fi
+
+      - name: Verify anonymous pull
+        run: |
+          set -euo pipefail
+          # Proves the artifact is publicly readable (no creds).
+          helm registry logout "${REGISTRY}" || true
+          tmp="$(mktemp -d)"
+          if ( cd "$tmp" && helm pull "oci://${CHART_OCI}/${CHART_NAME}" \
+                 --version "${{ steps.chart.outputs.version }}" ); then
+            echo "Anonymous pull OK: ${CHART_OCI}/${CHART_NAME}:${{ steps.chart.outputs.version }}"
+          else
+            echo "::error::Anonymous pull failed — package is not public yet."
+            exit 1
+          fi

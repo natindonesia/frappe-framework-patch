@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: scheduler
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.scheduler.replicas }}
+  selector:
+    matchLabels:
+      app: scheduler
+  template:
+    metadata:
+      labels:
+        app: scheduler
+    spec:
+      {{- include "frappe-bench.podDefaults" . | nindent 6 }}
+      containers:
+        - name: scheduler
+          image: {{ printf "%s:%s" .Values.runtime.repository .Values.runtime.tag }}
+          imagePullPolicy: {{ .Values.runtime.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            {{- toYaml .Values.scheduler.resources | nindent 12 }}
+          command: ["/bin/bash", "-c"]
+          args:
+            {{- toYaml .Values.scheduler.args | nindent 12 }}
+          env:
+            - name: PYTHONPATH
+              value: {{ include "frappe-bench.pythonPath" . | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4318"
+            - name: OTEL_SERVICE_NAME
+              value: {{ printf "%s-scheduler" (include "frappe-bench.namespace" .) | quote }}
+            - name: OTEL_FRAPPE_DB_STATEMENTS
+              value: "0"
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+            {{- include "frappe-bench.appVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "frappe-bench.appVolumes" . | nindent 8 }}
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: {{ include "frappe-bench.sitesClaim" . }}

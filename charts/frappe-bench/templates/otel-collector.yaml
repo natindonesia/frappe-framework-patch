@@ -1,0 +1,157 @@
+{{- if .Values.otel.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: otel-collector
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+          grpc:
+            endpoint: 0.0.0.0:4317
+    processors:
+      memory_limiter:
+        check_interval: 2s
+        limit_mib: 400
+        spike_limit_mib: 100
+      batch:
+        timeout: 1s
+        send_batch_size: 2048
+      resource/stack:
+        attributes:
+          - key: service.namespace
+            value: {{ include "frappe-bench.otelNamespace" . }}
+            action: upsert
+          - key: deployment.environment
+            value: {{ include "frappe-bench.otelEnvironment" . }}
+            action: upsert
+          - key: host.name
+            value: {{ .Values.otel.hostName }}
+            action: upsert
+          - key: server.region
+            value: {{ .Values.otel.serverRegion }}
+            action: upsert
+      attributes/scrub:
+        actions:
+          - action: delete
+            pattern: "(?i)^http\\.(request|response)\\.header\\..*(authorization|cookie|api[-_]?key|auth[-_]?token|token|secret|password|session|csrf|jwt|bearer).*$"
+          - action: delete
+            pattern: "(?i)^http\\.(request|response)\\.header\\.(x-(amz|goog|ms|amzn)-|.*-signature).*$"
+    exporters:
+      otlphttp/central:
+        endpoint: {{ .Values.otel.gatewayEndpoint }}
+        tls:
+          insecure: true
+        headers:
+          Authorization: "Bearer ${OTEL_WRITER_TOKEN}"
+        sending_queue:
+          enabled: true
+          queue_size: 10000
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 0
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resource/stack, attributes/scrub, batch]
+          exporters: [otlphttp/central]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resource/stack, attributes/scrub, batch]
+          exporters: [otlphttp/central]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, resource/stack, attributes/scrub, batch]
+          exporters: [otlphttp/central]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: otel-collector
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: otel-collector
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      {{- include "frappe-bench.podDefaults" . | nindent 6 }}
+      containers:
+        - name: otel-collector
+          image: {{ printf "%s:%s" .Values.images.otelCollector.repository .Values.images.otelCollector.tag }}
+          imagePullPolicy: IfNotPresent
+          args: ["--config=/etc/otelcol/config.yaml"]
+          env:
+            - name: GOMEMLIMIT
+              value: "300MiB"
+            - name: OTEL_WRITER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.writerTokenSecret.name }}
+                  key: {{ .Values.otel.writerTokenSecret.key }}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+{{- end }}
