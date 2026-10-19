@@ -74,9 +74,11 @@ FROM ${APP_ARTIFACT} AS src
 ARG APP
 
 FROM scratch AS artifact
+ARG APP
 COPY --from=src /opt/frappe/apps/${APP}/ /opt/frappe/apps/${APP}/
 
 FROM scratch AS payload
+ARG APP
 COPY --from=src /opt/frappe/apps/${APP}/ /
 
 FROM ghcr.io/natindonesia/frappe:latest-granian AS runtime-single
