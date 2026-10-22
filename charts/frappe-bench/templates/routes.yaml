@@ -1,5 +1,5 @@
 {{- range .Values.sites }}
-{{- $slug := .name | replace "." "-" }}
+{{- $slug := default (.name | replace "." "-") (default .routeName .routeSlug) }}
 {{- $gwName := default (default "grafana" (and $.Values.gateway $.Values.gateway.name)) (and .gateway .gateway.name) }}
 {{- $gwNamespace := default (default "observability" (and $.Values.gateway $.Values.gateway.namespace)) (and .gateway .gateway.namespace) }}
 {{- $gwSection := default (default "" (and $.Values.gateway $.Values.gateway.sectionName)) (and .gateway .gateway.sectionName) }}
