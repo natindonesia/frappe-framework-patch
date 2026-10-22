@@ -6,8 +6,6 @@ metadata:
   namespace: {{ include "frappe-bench.namespace" . }}
   labels:
     app: mariadb
-    app.kubernetes.io/name: mariadb
-    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
     {{- include "frappe-bench.labels" . | nindent 4 }}
 spec:
   selector:
@@ -24,8 +22,6 @@ metadata:
   name: mariadb-cluster
   namespace: {{ include "frappe-bench.namespace" . }}
   labels:
-    app.kubernetes.io/name: mariadb-cluster
-    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
     {{- include "frappe-bench.labels" . | nindent 4 }}
 spec:
   rootPasswordSecretKeyRef:

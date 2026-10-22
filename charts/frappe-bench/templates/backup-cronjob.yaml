@@ -5,8 +5,6 @@ metadata:
   name: {{ include "frappe-bench.canonicalName" . }}-backup
   namespace: {{ include "frappe-bench.namespace" . }}
   labels:
-    app.kubernetes.io/name: {{ include "frappe-bench.canonicalName" . }}-backup
-    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
     {{- include "frappe-bench.labels" . | nindent 4 }}
 spec:
   schedule: {{ default "0 * * * *" .Values.backup.schedule | quote }}

@@ -6,8 +6,6 @@ metadata:
   namespace: {{ include "frappe-bench.namespace" . }}
   labels:
     app: bench-migrate
-    app.kubernetes.io/name: bench-migrate
-    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
     {{- include "frappe-bench.labels" . | nindent 4 }}
   annotations:
     argocd.argoproj.io/hook: Sync

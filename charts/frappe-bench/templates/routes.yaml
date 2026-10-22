@@ -9,8 +9,6 @@ metadata:
   name: {{ $slug }}
   namespace: {{ include "frappe-bench.namespace" $ }}
   labels:
-    app.kubernetes.io/name: {{ $slug }}
-    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" $ }}
     {{- include "frappe-bench.labels" $ | nindent 4 }}
 spec:
   parentRefs:
