@@ -1,0 +1,107 @@
+{{- if .Values.migrateJob.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "frappe-bench.canonicalName" . }}-migrate
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: bench-migrate
+    app.kubernetes.io/name: bench-migrate
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: {{ default 0 .Values.migrateJob.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        app: bench-migrate
+        app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    spec:
+      restartPolicy: Never
+      {{- include "frappe-bench.podDefaults" . | nindent 6 }}
+      {{- if default true .Values.migrateJob.waitForDeps }}
+      initContainers:
+        - name: wait-db-redis
+          image: {{ default "busybox:1.36" .Values.migrateJob.waitImage }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for {{ .Values.backend.db.host }}:{{ .Values.backend.db.port }}..."
+              until nc -z {{ .Values.backend.db.host }} {{ .Values.backend.db.port }}; do sleep 2; done
+              {{- if .Values.redis.enabled }}
+              echo "Waiting for {{ .Values.backend.redis.host }}:{{ .Values.backend.redis.port }}..."
+              until nc -z {{ .Values.backend.redis.host }} {{ .Values.backend.redis.port }}; do sleep 2; done
+              {{- end }}
+              echo "Dependencies ready"
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "frappe-bench.imageRef" .Values.runtime }}
+          imagePullPolicy: {{ .Values.runtime.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            {{- toYaml (default .Values.web.resources .Values.migrateJob.resources) | nindent 12 }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              cd /home/frappe/frappe-bench
+              . env/bin/activate
+
+              {{- if default true .Values.migrateJob.setupAssetsDir }}
+              # Ensure sites/assets layout matches the mounted OCI apps without building at runtime
+              ASSETS_DIR="/home/frappe/frappe-bench/sites/assets"
+              mkdir -p "$ASSETS_DIR"
+              (
+                cd "$ASSETS_DIR"
+                {{- range .Values.apps }}
+                [ -d "/home/frappe/frappe-bench/apps/{{ .name }}/{{ .name }}/public" ] && rm -rf {{ .name }} && ln -s /home/frappe/frappe-bench/apps/{{ .name }}/{{ .name }}/public {{ .name }}
+                {{- end }}
+              )
+              {{- end }}
+
+              {{- if default true .Values.migrateJob.fixDbUsers }}
+              # Self-heal MariaDB user scope before migrating
+              if [ -f /scripts/fix-db-users.sh ]; then
+                bash /scripts/fix-db-users.sh
+              fi
+              {{- end }}
+
+              echo "Starting bench migrate for all sites..."
+              bench --site all migrate
+              echo "Bench migrate completed successfully."
+          envFrom:
+            - configMapRef:
+                name: frappe-env
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-mariadb" (include "frappe-bench.canonicalName" .)) .Values.backend.db.secretName }}
+                  key: {{ default "mariadb-root-password" .Values.backend.db.secretKey }}
+            - name: PYTHONPATH
+              value: {{ include "frappe-bench.pythonPath" . | quote }}
+          volumeMounts:
+            - name: sites-data
+              mountPath: /home/frappe/frappe-bench/sites
+            {{- include "frappe-bench.appVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "frappe-bench.appVolumes" . | nindent 8 }}
+        - name: sites-data
+          persistentVolumeClaim:
+            claimName: {{ include "frappe-bench.sitesClaim" . }}
+{{- end }}

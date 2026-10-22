@@ -1,0 +1,47 @@
+{{- if and .Values.mariadb .Values.mariadb.operator .Values.mariadb.operator.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: mariadb
+    app.kubernetes.io/name: mariadb
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/instance: mariadb-cluster
+    k8s.mariadb.com/role: primary
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: MariaDB
+metadata:
+  name: mariadb-cluster
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app.kubernetes.io/name: mariadb-cluster
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  rootPasswordSecretKeyRef:
+    name: {{ default (printf "%s-mariadb" (include "frappe-bench.canonicalName" .)) .Values.backend.db.secretName }}
+    key: {{ default "mariadb-root-password" .Values.backend.db.secretKey }}
+  image: {{ default "mariadb:11.4" .Values.mariadb.operator.image }}
+  replicas: {{ default 1 .Values.mariadb.operator.replicas }}
+  podMetadata:
+    labels:
+      app: mariadb
+      app.kubernetes.io/name: mariadb-cluster
+      app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+  storage:
+    size: {{ default "10Gi" .Values.mariadb.operator.storageSize }}
+    storageClassName: {{ default "ssd-hiiops-retain" .Values.mariadb.operator.storageClassName }}
+  myCnf: {{ default "[mysqld]\ncharacter-set-server = utf8mb4\ncollation-server = utf8mb4_unicode_ci\nskip-character-set-client-handshake\nskip-innodb-read-only-compressed\ninnodb-buffer-pool-size = 1G\ninnodb-log-file-size = 256M\ninnodb-flush-method = O_DIRECT\nmax-connections = 200\nmax-allowed-packet = 256M\nskip-name-resolve\n" .Values.mariadb.operator.myCnf | quote }}
+  resources:
+    {{- toYaml (default (dict "requests" (dict "cpu" "250m" "memory" "1Gi") "limits" (dict "memory" "2Gi")) .Values.mariadb.operator.resources) | nindent 4 }}
+{{- end }}

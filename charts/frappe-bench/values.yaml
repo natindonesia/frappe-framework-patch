@@ -182,5 +182,27 @@ nginx:
   # Request timeout on the non-socket.io route.
   requestTimeout: 60s
 
-# Compiled Python: which app the runtime imports first. Defaults to the
-# `primary` app above.
+# Optional MariaDB operator cluster deployment (CR).
+mariadb:
+  operator:
+    enabled: false
+    image: mariadb:11.4
+    replicas: 1
+    storageSize: 10Gi
+    storageClassName: ssd-hiiops-retain
+
+# Pre-sync release migration Job
+migrateJob:
+  enabled: true
+  waitForDeps: true
+  waitImage: busybox:1.36
+  setupAssetsDir: true
+  fixDbUsers: true
+  backoffLimit: 0
+
+# Scheduled S3/Spaces backup CronJob
+backup:
+  enabled: false
+  schedule: "0 * * * *"
+  dbDumpImage: mariadb:11.4
+  s3SyncImage: amazon/aws-cli:2.24.1

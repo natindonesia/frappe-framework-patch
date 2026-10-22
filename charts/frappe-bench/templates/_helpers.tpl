@@ -12,11 +12,16 @@
 {{- end -}}
 {{- end -}}
 
+{{/* Full canonical name (per repo AGENTS.md rule). */}}
+{{- define "frappe-bench.canonicalName" -}}
+{{- default .Release.Namespace .Values.canonicalName -}}
+{{- end -}}
+
 {{- define "frappe-bench.labels" -}}
 app.kubernetes.io/name: {{ include "frappe-bench.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
-app.kubernetes.io/part-of: frappe-bench
+app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
 {{- end -}}
 
 {{/* Common pod-level fields: image pull secrets + ServiceAccount default. */}}
@@ -37,7 +42,7 @@ The otel resource `service.namespace`: explicit value, else the release
 namespace (the full canonical name, per repo rule).
 */}}
 {{- define "frappe-bench.otelNamespace" -}}
-{{- default .Release.Namespace .Values.otel.namespace -}}
+{{- default (include "frappe-bench.canonicalName" .) .Values.otel.namespace -}}
 {{- end -}}
 
 {{/* deployment.environment: explicit, else the trailing segment of the ns. */}}
@@ -45,19 +50,49 @@ namespace (the full canonical name, per repo rule).
 {{- if .Values.otel.environment -}}
 {{- .Values.otel.environment -}}
 {{- else -}}
-{{- $parts := splitList "-" .Release.Namespace -}}
+{{- $parts := splitList "-" (include "frappe-bench.canonicalName" .) -}}
 {{- last $parts -}}
 {{- end -}}
 {{- end -}}
 
 {{/* First site hostname (used for probe Host headers). */}}
 {{- define "frappe-bench.primaryHost" -}}
+{{- if .Values.sites -}}
 {{- (first .Values.sites).name -}}
+{{- else -}}
+"localhost"
+{{- end -}}
 {{- end -}}
 
 {{/* PVC name for shared sites data. */}}
 {{- define "frappe-bench.sitesClaim" -}}
-{{- default (printf "%s-sites-data" (include "frappe-bench.fullname" .)) .Values.sitesStorage.existingClaim -}}
+{{- if .Values.sitesStorage.existingClaim -}}
+{{- .Values.sitesStorage.existingClaim -}}
+{{- else if .Values.sitesStorage.name -}}
+{{- .Values.sitesStorage.name -}}
+{{- else -}}
+{{- printf "%s-sites-data" (include "frappe-bench.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Helper to resolve image reference from string or object ({repository, tag, digest}).
+*/}}
+{{- define "frappe-bench.imageRef" -}}
+{{- if not . -}}
+{{- else if kindIs "string" . -}}
+  {{- . -}}
+{{- else if .digest -}}
+  {{- if .tag -}}
+    {{- printf "%s:%s@%s" .repository .tag .digest -}}
+  {{- else -}}
+    {{- printf "%s@%s" .repository .digest -}}
+  {{- end -}}
+{{- else if .tag -}}
+  {{- printf "%s:%s" .repository .tag -}}
+{{- else -}}
+  {{- .repository -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
@@ -79,8 +114,8 @@ callers can place volumes under spec.volumes and mounts in a container.
 {{- range .Values.apps }}
 - name: apps-{{ .name }}
   image:
-    reference: {{ printf "%s:%s" .image.repository .image.tag }}
-    pullPolicy: {{ default "IfNotPresent" .image.pullPolicy }}
+    reference: {{ include "frappe-bench.imageRef" .image }}
+    pullPolicy: {{ default "IfNotPresent" (default .pullPolicy (and .image .image.pullPolicy)) }}
 {{- end }}
 {{- end -}}
 
@@ -88,7 +123,9 @@ callers can place volumes under spec.volumes and mounts in a container.
 {{- range .Values.apps }}
 - name: apps-{{ .name }}
   mountPath: /home/frappe/frappe-bench/apps/{{ .name }}
-  subPath: opt/frappe/apps/{{ .name }}
+  {{- if .subPath }}
+  subPath: {{ .subPath }}
+  {{- end }}
   readOnly: true
 {{- end }}
 {{- end -}}

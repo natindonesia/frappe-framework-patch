@@ -118,7 +118,7 @@ spec:
       {{- include "frappe-bench.podDefaults" . | nindent 6 }}
       containers:
         - name: otel-collector
-          image: {{ printf "%s:%s" .Values.images.otelCollector.repository .Values.images.otelCollector.tag }}
+          image: {{ include "frappe-bench.imageRef" .Values.images.otelCollector }}
           imagePullPolicy: IfNotPresent
           args: ["--config=/etc/otelcol/config.yaml"]
           env:

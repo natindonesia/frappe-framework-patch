@@ -41,7 +41,7 @@ spec:
             value: "10"
       containers:
         - name: web
-          image: {{ printf "%s:%s" .Values.runtime.repository .Values.runtime.tag }}
+          image: {{ include "frappe-bench.imageRef" .Values.runtime }}
           imagePullPolicy: {{ .Values.runtime.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -56,7 +56,7 @@ spec:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector:4318"
             - name: OTEL_SERVICE_NAME
-              value: {{ printf "%s-web" (include "frappe-bench.namespace" .) | quote }}
+              value: {{ printf "%s-web" (include "frappe-bench.canonicalName" .) | quote }}
             - name: OTEL_FRAPPE_DB_STATEMENTS
               value: {{ .Values.web.otelFrappeDbStatements | quote }}
           ports:

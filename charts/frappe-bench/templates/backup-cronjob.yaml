@@ -1,0 +1,175 @@
+{{- if and .Values.backup .Values.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "frappe-bench.canonicalName" . }}-backup
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "frappe-bench.canonicalName" . }}-backup
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  schedule: {{ default "0 * * * *" .Values.backup.schedule | quote }}
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: {{ include "frappe-bench.canonicalName" . }}-backup
+            app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+        spec:
+          restartPolicy: OnFailure
+          {{- include "frappe-bench.podDefaults" . | nindent 10 }}
+          volumes:
+            - name: backup-scratch
+              emptyDir: {}
+            - name: sites-data
+              persistentVolumeClaim:
+                claimName: {{ include "frappe-bench.sitesClaim" . }}
+                readOnly: true
+          initContainers:
+            - name: db-dump
+              image: {{ default "mariadb:11.4" .Values.backup.dbDumpImage }}
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+              command:
+                - bash
+                - -euo
+                - pipefail
+                - -c
+                - |
+                  set -euo pipefail
+                  TS="$(date -u +%Y%m%d_%H%M%S)"
+                  OUT="/backup/{{ include "frappe-bench.canonicalName" . }}-db-${TS}.sql.gz"
+                  echo "Starting hourly MariaDB dump -> ${OUT}"
+                  mariadb-dump \
+                    --host="${MYSQL_HOST}" \
+                    --user=root \
+                    --password="${MYSQL_ROOT_PASSWORD}" \
+                    --single-transaction \
+                    --quick \
+                    --default-character-set=utf8mb4 \
+                    --hex-blob \
+                    --routines \
+                    --triggers \
+                    --events \
+                    --all-databases | gzip -c > "${OUT}"
+                  echo "MariaDB dump finished: $(ls -lh "${OUT}")"
+
+                  echo "Checking /sites health and archiving configurations..."
+                  if [ ! -f /sites/common_site_config.json ]; then
+                    echo "FATAL: /sites/common_site_config.json missing! Volume may be unmounted or corrupt." >&2
+                    exit 1
+                  fi
+                  CFG_OUT="/backup/{{ include "frappe-bench.canonicalName" . }}-configs-${TS}.tar.gz"
+                  cd /sites
+                  tar -czf "${CFG_OUT}" \
+                    common_site_config.json \
+                    $( [ -f apps.txt ] && echo "apps.txt" ) \
+                    $(find . -maxdepth 2 -name "site_config.json" | sed 's|^\./||')
+                  echo "Config archive created: $(ls -lh "${CFG_OUT}")"
+              env:
+                - name: MYSQL_HOST
+                  value: {{ .Values.backend.db.host }}
+                - name: MYSQL_ROOT_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ default (printf "%s-mariadb" (include "frappe-bench.canonicalName" .)) .Values.backend.db.secretName }}
+                      key: {{ default "mariadb-root-password" .Values.backend.db.secretKey }}
+              volumeMounts:
+                - name: backup-scratch
+                  mountPath: /backup
+                - name: sites-data
+                  mountPath: /sites
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+          containers:
+            - name: s3-sync
+              image: {{ default "amazon/aws-cli:2.24.1" .Values.backup.s3SyncImage }}
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+              command:
+                - sh
+                - -eu
+                - -c
+                - |
+                  set -eu
+                  START_TS=$(date +%s)
+                  HOUR="$(date -u +%H)"
+                  echo "Starting upload to S3: ${S3_ENDPOINT}/${S3_BUCKET}/${S3_PREFIX}/"
+
+                  if [ ! -f /sites/common_site_config.json ]; then
+                    echo "FATAL: /sites volume appears empty or missing! Aborting upload to protect remote backup." >&2
+                    exit 1
+                  fi
+
+                  echo "1. Uploading database dump (hourly)..."
+                  aws --endpoint-url "${S3_ENDPOINT}" --region "${S3_REGION}" \
+                    s3 cp /backup/ "s3://${S3_BUCKET}/${S3_PREFIX}/mariadb/hourly/" --recursive --exclude "*" --include "*.sql.gz"
+
+                  if [ "${HOUR}" = "00" ]; then
+                    echo "2. Uploading database dump (daily at 00:00 UTC)..."
+                    aws --endpoint-url "${S3_ENDPOINT}" --region "${S3_REGION}" \
+                      s3 cp /backup/ "s3://${S3_BUCKET}/${S3_PREFIX}/mariadb/daily/" --recursive --exclude "*" --include "*.sql.gz"
+                  fi
+
+                  echo "3. Uploading immutable configuration archive..."
+                  aws --endpoint-url "${S3_ENDPOINT}" --region "${S3_REGION}" \
+                    s3 cp /backup/ "s3://${S3_BUCKET}/${S3_PREFIX}/configs/" --recursive --exclude "*" --include "*configs-*.tar.gz"
+
+                  echo "4. Syncing site directories (append-only)..."
+                  for site_dir in /sites/*/; do
+                    site_name="$(basename "${site_dir}")"
+                    if [ "${site_name}" != "assets" ]; then
+                      echo "Syncing site: ${site_name}..."
+                      aws --endpoint-url "${S3_ENDPOINT}" --region "${S3_REGION}" \
+                        s3 sync "${site_dir}" "s3://${S3_BUCKET}/${S3_PREFIX}/sites/${site_name}/" \
+                        --exclude "*locks*" \
+                        --exclude "*cache*"
+                    fi
+                  done
+
+                  echo "5. Copying active site configuration files..."
+                  for cfg in common_site_config.json apps.txt; do
+                    if [ -f "/sites/${cfg}" ]; then
+                      aws --endpoint-url "${S3_ENDPOINT}" --region "${S3_REGION}" \
+                        s3 cp "/sites/${cfg}" "s3://${S3_BUCKET}/${S3_PREFIX}/sites/${cfg}"
+                    fi
+                  done
+
+                  DURATION=$(( $(date +%s) - START_TS ))
+                  echo "Backup completed successfully in ${DURATION}s."
+              envFrom:
+                - secretRef:
+                    name: {{ default (printf "%s-backup-s3" (include "frappe-bench.canonicalName" .)) .Values.backup.secretName }}
+              volumeMounts:
+                - name: backup-scratch
+                  mountPath: /backup
+                  readOnly: true
+                - name: sites-data
+                  mountPath: /sites
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+{{- end }}

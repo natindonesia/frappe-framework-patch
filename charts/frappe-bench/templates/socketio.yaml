@@ -35,7 +35,7 @@ spec:
       {{- include "frappe-bench.podDefaults" . | nindent 6 }}
       containers:
         - name: socketio
-          image: {{ printf "%s:%s" .Values.runtime.repository .Values.runtime.tag }}
+          image: {{ include "frappe-bench.imageRef" .Values.runtime }}
           imagePullPolicy: {{ .Values.runtime.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false

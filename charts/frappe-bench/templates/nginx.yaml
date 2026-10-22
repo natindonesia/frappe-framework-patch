@@ -36,7 +36,7 @@ spec:
       {{- include "frappe-bench.podDefaults" . | nindent 6 }}
       containers:
         - name: nginx
-          image: {{ printf "%s:%s" .Values.images.nginx.repository .Values.images.nginx.tag }}
+          image: {{ include "frappe-bench.imageRef" .Values.images.nginx }}
           imagePullPolicy: {{ .Values.images.nginx.pullPolicy | default "IfNotPresent" }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -50,7 +50,7 @@ spec:
             - name: NGINX_OTEL_ENDPOINT
               value: "otel-collector:4317"
             - name: OTEL_SERVICE_NAME
-              value: {{ printf "%s-nginx" (include "frappe-bench.namespace" .) | quote }}
+              value: {{ printf "%s-nginx" (include "frappe-bench.canonicalName" .) | quote }}
           ports:
             - containerPort: {{ .Values.nginx.servicePort }}
               name: http

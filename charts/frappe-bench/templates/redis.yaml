@@ -36,7 +36,7 @@ spec:
       {{- include "frappe-bench.podDefaults" . | nindent 6 }}
       containers:
         - name: redis
-          image: {{ printf "%s:%s" .Values.images.redis.repository .Values.images.redis.tag }}
+          image: {{ include "frappe-bench.imageRef" .Values.images.redis }}
           securityContext:
             allowPrivilegeEscalation: false
           resources:

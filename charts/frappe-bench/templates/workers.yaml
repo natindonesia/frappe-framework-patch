@@ -20,7 +20,7 @@ spec:
       {{- include "frappe-bench.podDefaults" $ | nindent 6 }}
       containers:
         - name: worker
-          image: {{ printf "%s:%s" $.Values.runtime.repository $.Values.runtime.tag }}
+          image: {{ include "frappe-bench.imageRef" $.Values.runtime }}
           imagePullPolicy: {{ $.Values.runtime.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -35,7 +35,7 @@ spec:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector:4318"
             - name: OTEL_SERVICE_NAME
-              value: {{ printf "%s-worker-%s" (include "frappe-bench.namespace" $) $name | quote }}
+              value: {{ if eq $name "default" }}{{ printf "%s-worker" (include "frappe-bench.canonicalName" $) | quote }}{{ else }}{{ printf "%s-worker-%s" (include "frappe-bench.canonicalName" $) $name | quote }}{{ end }}
             - name: OTEL_FRAPPE_DB_STATEMENTS
               value: "0"
           volumeMounts:

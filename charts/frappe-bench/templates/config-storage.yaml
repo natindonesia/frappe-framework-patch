@@ -11,12 +11,15 @@ data:
   UPSTREAM_REAL_IP_ADDRESS: "127.0.0.1"
   FRAPPE_SITE_NAME_HEADER: "$host"
 ---
+{{- if and (not .Values.sitesStorage.existingClaim) (default true .Values.sitesStorage.create) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "frappe-bench.sitesClaim" . }}
   namespace: {{ include "frappe-bench.namespace" . }}
   labels:
+    app.kubernetes.io/name: {{ include "frappe-bench.sitesClaim" . }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
     {{- include "frappe-bench.labels" . | nindent 4 }}
 spec:
   accessModes:
@@ -25,3 +28,4 @@ spec:
   resources:
     requests:
       storage: {{ .Values.sitesStorage.size }}
+{{- end }}
