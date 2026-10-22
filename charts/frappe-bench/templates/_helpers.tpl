@@ -123,9 +123,7 @@ callers can place volumes under spec.volumes and mounts in a container.
 {{- range .Values.apps }}
 - name: apps-{{ .name }}
   mountPath: /home/frappe/frappe-bench/apps/{{ .name }}
-  {{- if .subPath }}
-  subPath: {{ .subPath }}
-  {{- end }}
+  subPath: {{ default (printf "opt/frappe/apps/%s" .name) .subPath }}
   readOnly: true
 {{- end }}
 {{- end -}}
