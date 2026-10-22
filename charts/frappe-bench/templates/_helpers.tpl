@@ -107,12 +107,20 @@ PYTHONPATH: every app dir joined by ':'. Primary app first.
 {{- end -}}
 
 {{/*
+Helper to format an app volume name ensuring RFC 1123 compliance (Kubernetes volume names
+require lowercase alphanumeric characters and '-', no underscores).
+*/}}
+{{- define "frappe-bench.appVolumeName" -}}
+{{- printf "apps-%s" (. | replace "_" "-" | lower | trunc 58 | trimSuffix "-") -}}
+{{- end -}}
+
+{{/*
 App code volumes + mounts, driven by .Values.apps. Rendered as two blocks so
 callers can place volumes under spec.volumes and mounts in a container.
 */}}
 {{- define "frappe-bench.appVolumes" -}}
 {{- range .Values.apps }}
-- name: apps-{{ .name }}
+- name: {{ include "frappe-bench.appVolumeName" .name }}
   image:
     reference: {{ include "frappe-bench.imageRef" .image }}
     pullPolicy: {{ default "IfNotPresent" (default .pullPolicy (and .image .image.pullPolicy)) }}
@@ -121,7 +129,7 @@ callers can place volumes under spec.volumes and mounts in a container.
 
 {{- define "frappe-bench.appVolumeMounts" -}}
 {{- range .Values.apps }}
-- name: apps-{{ .name }}
+- name: {{ include "frappe-bench.appVolumeName" .name }}
   mountPath: /home/frappe/frappe-bench/apps/{{ .name }}
   subPath: {{ default (printf "opt/frappe/apps/%s" .name) .subPath }}
   readOnly: true
