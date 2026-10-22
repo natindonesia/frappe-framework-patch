@@ -16,9 +16,13 @@ on:
     branches: [main]
     paths-ignore:
       - 'experiments/**'
+      - 'charts/**'
+      - '.github/workflows/frappe-bench-chart.yml'
   pull_request:
     paths-ignore:
       - 'experiments/**'
+      - 'charts/**'
+      - '.github/workflows/frappe-bench-chart.yml'
   workflow_dispatch:
     inputs:
       push_to_registry:
