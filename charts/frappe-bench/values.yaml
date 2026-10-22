@@ -206,3 +206,95 @@ backup:
   schedule: "0 * * * *"
   dbDumpImage: mariadb:11.4
   s3SyncImage: amazon/aws-cli:2.24.1
+
+# KEDA Autoscaling for Granian web and Redis RQ background workers
+autoscaling:
+  enabled: false
+
+  adapter:
+    image:
+      repository: python
+      tag: "3.12-alpine"
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 20m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+    historyWindowSec: 1.0
+
+  web:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+    pollingInterval: 5
+    cooldownPeriod: 60
+    triggers:
+      granianQueue:
+        enabled: true
+        targetValue: 10
+      cpu:
+        enabled: true
+        targetAverageValue: "4"
+    hpaBehavior:
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        selectPolicy: Max
+        policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 15
+          - type: Percent
+            value: 100
+            periodSeconds: 15
+      scaleDown:
+        stabilizationWindowSeconds: 90
+        selectPolicy: Min
+        policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 30
+          - type: Percent
+            value: 50
+            periodSeconds: 30
+
+  workers:
+    default:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 5
+      pollingInterval: 5
+      cooldownPeriod: 60
+      triggers:
+        redisQueue:
+          enabled: true
+          benchKey: "home-frappe-frappe-bench"
+          queues:
+            - name: default
+              targetListLength: 15
+            - name: long
+              targetListLength: 5
+            - name: short
+              targetListLength: 15
+        cpu:
+          enabled: true
+          targetUtilization: 80
+      hpaBehavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          selectPolicy: Max
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 15
+            - type: Pods
+              value: 2
+              periodSeconds: 15
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          selectPolicy: Min
+          policies:
+            - type: Percent
+              value: 50
+              periodSeconds: 30

@@ -1,0 +1,90 @@
+{{- if .Values.autoscaling.enabled }}
+{{- if and .Values.autoscaling.web .Values.autoscaling.web.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: web
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app.kubernetes.io/name: {{ printf "%s-web" (include "frappe-bench.canonicalName" .) }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web
+  minReplicaCount: {{ default 1 .Values.autoscaling.web.minReplicas }}
+  maxReplicaCount: {{ default 3 .Values.autoscaling.web.maxReplicas }}
+  pollingInterval: {{ default 5 .Values.autoscaling.web.pollingInterval }}
+  cooldownPeriod: {{ default 60 .Values.autoscaling.web.cooldownPeriod }}
+  {{- with .Values.autoscaling.web.hpaBehavior }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        {{- toYaml . | nindent 8 }}
+  {{- end }}
+  triggers:
+    {{- if and .Values.autoscaling.web.triggers .Values.autoscaling.web.triggers.granianQueue .Values.autoscaling.web.triggers.granianQueue.enabled }}
+    - type: metrics-api
+      metadata:
+        url: "http://granian-adapter.{{ include "frappe-bench.namespace" . }}.svc.cluster.local:8080/"
+        format: "json"
+        valueLocation: "sustained_queue"
+        targetValue: {{ .Values.autoscaling.web.triggers.granianQueue.targetValue | default 10 | quote }}
+    {{- end }}
+    {{- if and .Values.autoscaling.web.triggers .Values.autoscaling.web.triggers.cpu .Values.autoscaling.web.triggers.cpu.enabled }}
+    - type: cpu
+      metricType: AverageValue
+      metadata:
+        value: {{ .Values.autoscaling.web.triggers.cpu.targetAverageValue | default "4" | quote }}
+    {{- end }}
+{{- end }}
+
+{{- range $wName, $wConfig := .Values.autoscaling.workers }}
+{{- if $wConfig.enabled }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-{{ $wName }}
+  namespace: {{ include "frappe-bench.namespace" $ }}
+  labels:
+    app.kubernetes.io/name: {{ printf "%s-worker-%s" (include "frappe-bench.canonicalName" $) $wName }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" $ }}
+    {{- include "frappe-bench.labels" $ | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker-{{ $wName }}
+  minReplicaCount: {{ default 1 $wConfig.minReplicas }}
+  maxReplicaCount: {{ default 5 $wConfig.maxReplicas }}
+  cooldownPeriod: {{ default 60 $wConfig.cooldownPeriod }}
+  pollingInterval: {{ default 5 $wConfig.pollingInterval }}
+  {{- with $wConfig.hpaBehavior }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        {{- toYaml . | nindent 8 }}
+  {{- end }}
+  triggers:
+    {{- if and $wConfig.triggers $wConfig.triggers.redisQueue $wConfig.triggers.redisQueue.enabled }}
+    {{- $benchKey := default "home-frappe-frappe-bench" $wConfig.triggers.redisQueue.benchKey }}
+    {{- range $wConfig.triggers.redisQueue.queues }}
+    - type: redis
+      metadata:
+        address: "{{ $.Values.backend.redis.host }}.{{ include "frappe-bench.namespace" $ }}.svc.cluster.local:{{ $.Values.backend.redis.port }}"
+        listName: "rq:queue:{{ $benchKey }}:{{ .name }}"
+        listLength: {{ .targetListLength | quote }}
+    {{- end }}
+    {{- end }}
+    {{- if and $wConfig.triggers $wConfig.triggers.cpu $wConfig.triggers.cpu.enabled }}
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: {{ $wConfig.triggers.cpu.targetUtilization | quote }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

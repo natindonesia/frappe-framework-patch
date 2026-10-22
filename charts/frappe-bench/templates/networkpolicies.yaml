@@ -495,4 +495,56 @@ spec:
         - protocol: TCP
           port: 9090
 {{- end }}
+{{- if and .Values.autoscaling.enabled (or (and .Values.autoscaling.web .Values.autoscaling.web.enabled) (and .Values.autoscaling.adapter .Values.autoscaling.adapter.enabled)) }}
+---
+# 12) Granian metrics adapter policy for KEDA
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: granian-adapter-policy
+  namespace: {{ include "frappe-bench.namespace" . }}
+spec:
+  podSelector:
+    matchLabels:
+      app: granian-adapter
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keda
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - ipBlock:
+            cidr: {{ $np.nodeCidr }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: web
+      ports:
+        - protocol: TCP
+          port: {{ default 9090 .Values.web.metricsPort }}
+    {{- if .Values.redis.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: {{ $cache }}
+    {{- end }}
+{{- end }}
 {{- end }}

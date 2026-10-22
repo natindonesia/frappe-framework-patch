@@ -1,0 +1,287 @@
+{{- if and .Values.autoscaling.enabled (or (and .Values.autoscaling.web .Values.autoscaling.web.enabled) (and .Values.autoscaling.adapter .Values.autoscaling.adapter.enabled)) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: granian-adapter-script
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app.kubernetes.io/name: {{ printf "%s-granian-adapter" (include "frappe-bench.canonicalName" .) }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+data:
+  adapter.py: |
+    import http.server
+    import urllib.request
+    import json
+    import time
+    import threading
+    import socket
+    from collections import deque
+
+    state = {
+        "blocking_queue": 0.0,
+        "sustained_queue": 0.0,
+        "active_connections": 0.0,
+        "handled_requests": 0.0,
+        "workers_alive": 0,
+        "last_updated": 0.0,
+        "healthy": True
+    }
+
+    redis_state = {
+        "queue_default": 0,
+        "queue_long": 0,
+        "queue_short": 0,
+        "queue_total": 0,
+        "failed_jobs": 0,
+        "workers_total": 0,
+        "workers_busy": 0,
+        "workers_idle": 0,
+        "last_updated": 0.0
+    }
+
+    # Sliding window of (timestamp, blocking_queue) samples
+    queue_history = deque()
+    HISTORY_WINDOW_SEC = {{ default 1.0 .Values.autoscaling.adapter.historyWindowSec }}
+
+    def poll_granian():
+        global state, queue_history
+        while True:
+            try:
+                now = time.time()
+                req = urllib.request.Request("http://{{ default "web" .Values.web.serviceHost }}:{{ default 9090 .Values.web.metricsPort }}/metrics")
+                with urllib.request.urlopen(req, timeout=1.0) as resp:
+                    raw = resp.read().decode('utf-8', errors='ignore')
+                
+                bq = 0.0
+                conn = 0.0
+                reqs = 0.0
+                workers = 0
+                for line in raw.splitlines():
+                    if line.startswith("granian_blocking_queue{"):
+                        bq += float(line.split()[-1])
+                    elif line.startswith("granian_connections_active{"):
+                        conn += float(line.split()[-1])
+                    elif line.startswith("granian_requests_handled{"):
+                        reqs += float(line.split()[-1])
+                    elif line.startswith("granian_blocking_threads{"):
+                        workers += 1
+
+                queue_history.append((now, bq))
+                while queue_history and (now - queue_history[0][0]) > HISTORY_WINDOW_SEC:
+                    queue_history.popleft()
+
+                sustained_bq = min(sample[1] for sample in queue_history) if queue_history else bq
+
+                state["blocking_queue"] = bq
+                state["sustained_queue"] = sustained_bq
+                state["active_connections"] = conn
+                state["handled_requests"] = reqs
+                state["workers_alive"] = workers
+                state["last_updated"] = now
+                state["healthy"] = True
+            except Exception:
+                state["healthy"] = False
+            time.sleep(0.2)
+
+    def poll_redis():
+        global redis_state
+        bench_key = "{{ default "home-frappe-frappe-bench" .Values.autoscaling.adapter.benchKey }}"
+        while True:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1.5)
+                s.connect(("{{ .Values.backend.redis.host }}", {{ .Values.backend.redis.port }}))
+
+                cmds = [
+                    f"LLEN rq:queue:{bench_key}:default",
+                    f"LLEN rq:queue:{bench_key}:long",
+                    f"LLEN rq:queue:{bench_key}:short",
+                    f"ZCARD rq:failed:{bench_key}:default",
+                    "SMEMBERS rq:workers"
+                ]
+                payload = ""
+                for cmd in cmds:
+                    parts = cmd.split()
+                    payload += f"*{len(parts)}\r\n"
+                    for p in parts:
+                        payload += f"${len(p)}\r\n{p}\r\n"
+                s.sendall(payload.encode("utf-8"))
+
+                data = b""
+                while True:
+                    chunk = s.recv(4096)
+                    data += chunk
+                    if len(chunk) < 4096:
+                        break
+
+                text = data.decode("utf-8", errors="ignore")
+                lines = text.split("\r\n")
+
+                int_vals = []
+                worker_keys = []
+                for l in lines:
+                    if l.startswith(":") and len(int_vals) < 4:
+                        int_vals.append(int(l[1:]))
+                    elif l.startswith("rq:worker:"):
+                        worker_keys.append(l)
+
+                q_def = int_vals[0] if len(int_vals) > 0 else 0
+                q_long = int_vals[1] if len(int_vals) > 1 else 0
+                q_short = int_vals[2] if len(int_vals) > 2 else 0
+                failed = int_vals[3] if len(int_vals) > 3 else 0
+
+                busy, idle = 0, len(worker_keys)
+                if worker_keys:
+                    pipe = ""
+                    for w in worker_keys:
+                        pipe += f"*3\r\n$4\r\nHGET\r\n${len(w)}\r\n{w}\r\n$5\r\nstate\r\n"
+                    s.sendall(pipe.encode("utf-8"))
+                    wdata = b""
+                    while True:
+                        wchunk = s.recv(4096)
+                        wdata += wchunk
+                        if len(wchunk) < 4096:
+                            break
+                    states = [l for l in wdata.decode("utf-8", errors="ignore").split("\r\n") if l in ("idle", "busy")]
+                    busy = states.count("busy")
+                    idle = states.count("idle")
+
+                s.close()
+                redis_state["queue_default"] = q_def
+                redis_state["queue_long"] = q_long
+                redis_state["queue_short"] = q_short
+                redis_state["queue_total"] = q_def + q_long + q_short
+                redis_state["failed_jobs"] = failed
+                redis_state["workers_total"] = len(worker_keys)
+                redis_state["workers_busy"] = busy
+                redis_state["workers_idle"] = idle
+                redis_state["last_updated"] = time.time()
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/healthz":
+                self.send_response(200 if state["healthy"] else 500)
+                self.end_headers()
+                self.wfile.write(b"OK" if state["healthy"] else b"FAIL")
+                return
+
+            if self.path == "/metrics":
+                lines = [
+                    "# HELP granian_sustained_queue Sustained blocking queue depth",
+                    "# TYPE granian_sustained_queue gauge",
+                    f"granian_sustained_queue {state['sustained_queue']}",
+                    "# HELP granian_blocking_queue Instant blocking queue depth",
+                    "# TYPE granian_blocking_queue gauge",
+                    f"granian_blocking_queue {state['blocking_queue']}",
+                    "# HELP frappe_rq_queue_length Queue depth of Frappe RQ background queues",
+                    "# TYPE frappe_rq_queue_length gauge",
+                    'frappe_rq_queue_length{queue="default"} ' + str(redis_state["queue_default"]),
+                    'frappe_rq_queue_length{queue="long"} ' + str(redis_state["queue_long"]),
+                    'frappe_rq_queue_length{queue="short"} ' + str(redis_state["queue_short"]),
+                    'frappe_rq_queue_length{queue="total"} ' + str(redis_state["queue_total"]),
+                    "# HELP frappe_rq_failed_jobs Number of failed jobs",
+                    "# TYPE frappe_rq_failed_jobs gauge",
+                    f"frappe_rq_failed_jobs {redis_state['failed_jobs']}",
+                    "# HELP frappe_rq_workers Registered Frappe workers",
+                    "# TYPE frappe_rq_workers gauge",
+                    'frappe_rq_workers{state="total"} ' + str(redis_state["workers_total"]),
+                    'frappe_rq_workers{state="busy"} ' + str(redis_state["workers_busy"]),
+                    'frappe_rq_workers{state="idle"} ' + str(redis_state["workers_idle"])
+                ]
+                body = ("\n".join(lines) + "\n").encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            combined = dict(state)
+            combined.update(redis_state)
+            body = json.dumps(combined).encode('utf-8')
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            return
+
+    if __name__ == "__main__":
+        t1 = threading.Thread(target=poll_granian, daemon=True)
+        t1.start()
+        t2 = threading.Thread(target=poll_redis, daemon=True)
+        t2.start()
+        server = http.server.ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
+        server.serve_forever()
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: granian-adapter
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: granian-adapter
+    app.kubernetes.io/name: {{ printf "%s-granian-adapter" (include "frappe-bench.canonicalName" .) }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: granian-adapter
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: granian-adapter
+  namespace: {{ include "frappe-bench.namespace" . }}
+  labels:
+    app: granian-adapter
+    app.kubernetes.io/name: {{ printf "%s-granian-adapter" (include "frappe-bench.canonicalName" .) }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: granian-adapter
+  template:
+    metadata:
+      labels:
+        app: granian-adapter
+        app.kubernetes.io/name: {{ printf "%s-granian-adapter" (include "frappe-bench.canonicalName" .) }}
+        app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    spec:
+      {{- include "frappe-bench.podDefaults" . | nindent 6 }}
+      containers:
+        - name: adapter
+          image: {{ include "frappe-bench.imageRef" .Values.autoscaling.adapter.image }}
+          imagePullPolicy: {{ default "IfNotPresent" .Values.autoscaling.adapter.image.pullPolicy }}
+          command: ["python3", "-u", "/app/adapter.py"]
+          resources:
+            {{- toYaml .Values.autoscaling.adapter.resources | nindent 12 }}
+          ports:
+            - containerPort: 8080
+              name: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: script
+              mountPath: /app
+      volumes:
+        - name: script
+          configMap:
+            name: granian-adapter-script
+{{- end }}

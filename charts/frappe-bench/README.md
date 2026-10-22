@@ -55,6 +55,9 @@ oci://ghcr.io/natindonesia/charts/frappe-bench
    - Runs `bench --site all migrate` on sync hooks, self-heals ephemeral MariaDB user scopes (`fix-db-users.sh`), and links app public asset directories automatically.
 7. **Zero-Downtime Backup CronJob**:
    - Hourly database dumping and append-only S3 synchronization for sites and configuration backups.
+8. **Built-in KEDA Autoscaling**:
+   - Autoscales Granian WSGI web pods based on real-time internal blocking queue pressure (`sustained_queue`) with CPU backstops.
+   - Autoscales background RQ workers based on Redis queue depths (`default`, `long`, `short`).
 
 ---
 
