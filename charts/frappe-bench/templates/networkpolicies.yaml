@@ -146,9 +146,12 @@ spec:
         - podSelector:
             matchLabels:
               app: otel-collector
+        - podSelector:
+            matchLabels:
+              app: granian-adapter
       ports:
         - protocol: TCP
-          port: 9090
+          port: {{ default 9090 .Values.web.metricsPort }}
     - from:
         - ipBlock:
             cidr: {{ $np.nodeCidr }}

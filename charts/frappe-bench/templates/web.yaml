@@ -13,6 +13,11 @@ spec:
     - name: http
       port: {{ .Values.web.servicePort }}
       targetPort: {{ .Values.web.servicePort }}
+    {{- if default true .Values.web.metricsPort }}
+    - name: metrics
+      port: {{ default 9090 .Values.web.metricsPort }}
+      targetPort: {{ default 9090 .Values.web.metricsPort }}
+    {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -62,6 +67,10 @@ spec:
           ports:
             - containerPort: {{ .Values.web.servicePort }}
               name: http
+            {{- if default true .Values.web.metricsPort }}
+            - containerPort: {{ default 9090 .Values.web.metricsPort }}
+              name: metrics
+            {{- end }}
           startupProbe:
             httpGet:
               path: /api/method/ping
