@@ -67,7 +67,7 @@ oci://ghcr.io/natindonesia/charts/frappe-bench
 
 ```bash
 helm install my-bench oci://ghcr.io/natindonesia/charts/frappe-bench \
-  --version 0.3.2 \
+  --version 0.3.3 \
   --namespace my-bench-namespace \
   --create-namespace \
   -f values.yaml
@@ -91,7 +91,7 @@ spec:
     # 2. Public OCI Helm Chart
     - repoURL: ghcr.io/natindonesia/charts
       chart: frappe-bench
-      targetRevision: 0.3.2
+      targetRevision: 0.3.3
       helm:
         releaseName: my-bench
         valueFiles:
@@ -159,6 +159,11 @@ heartbeats include the compressed database and config archive sizes in bytes,
 their combined artifact size, and elapsed seconds in the push message. Failures
 send a down heartbeat. Uploaded site files remain excluded unless
 `includeFiles` is enabled.
+
+The latest site config files remain under `sites/`. The same current files are
+also copied to `sites/hourly/` on every run and to `sites/daily/` at 00:00 UTC.
+This applies to `common_site_config.json`, `apps.txt`, and each site's
+`site_config.json`.
 
 ---
 

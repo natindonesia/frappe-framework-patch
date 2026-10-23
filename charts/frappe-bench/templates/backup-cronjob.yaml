@@ -184,11 +184,17 @@ spec:
                       s3 cp /backup/ "s3://${S3_BUCKET}/${S3_PREFIX}/configs/daily/" --recursive --exclude "*" --include "*configs-*.tar.gz"
                   fi
 
-                  echo "4. Copying active configuration files (root & per-site configs)..."
+                  echo "4. Copying active configuration files to latest and hourly son paths..."
                   for cfg in common_site_config.json apps.txt; do
                     if [ -f "/sites/${cfg}" ]; then
                       aws --endpoint-url "${S3_ENDPOINT}" --region "${S3_REGION}" \
                         s3 cp "/sites/${cfg}" "s3://${S3_BUCKET}/${S3_PREFIX}/sites/${cfg}"
+                      aws --endpoint-url "${S3_ENDPOINT}" --region "${S3_REGION}" \
+                        s3 cp "/sites/${cfg}" "s3://${S3_BUCKET}/${S3_PREFIX}/sites/hourly/${cfg}"
+                      if [ "${HOUR}" = "00" ]; then
+                        aws --endpoint-url "${S3_ENDPOINT}" --region "${S3_REGION}" \
+                          s3 cp "/sites/${cfg}" "s3://${S3_BUCKET}/${S3_PREFIX}/sites/daily/${cfg}"
+                      fi
                     fi
                   done
 
@@ -198,6 +204,12 @@ spec:
                       echo "Copying site configuration for ${site_name}..."
                       aws --endpoint-url "${S3_ENDPOINT}" --region "${S3_REGION}" \
                         s3 cp "${site_dir}site_config.json" "s3://${S3_BUCKET}/${S3_PREFIX}/sites/${site_name}/site_config.json"
+                      aws --endpoint-url "${S3_ENDPOINT}" --region "${S3_REGION}" \
+                        s3 cp "${site_dir}site_config.json" "s3://${S3_BUCKET}/${S3_PREFIX}/sites/hourly/${site_name}/site_config.json"
+                      if [ "${HOUR}" = "00" ]; then
+                        aws --endpoint-url "${S3_ENDPOINT}" --region "${S3_REGION}" \
+                          s3 cp "${site_dir}site_config.json" "s3://${S3_BUCKET}/${S3_PREFIX}/sites/daily/${site_name}/site_config.json"
+                      fi
                     fi
                   done
 
