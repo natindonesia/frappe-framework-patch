@@ -206,6 +206,12 @@ backup:
   schedule: "0 * * * *"
   dbDumpImage: mariadb:11.4
   s3SyncImage: amazon/aws-cli:2.24.1
+  # When false, only configs (site_config.json, common_site_config.json, apps.txt)
+  # and MariaDB database dumps are backed up. Media attachments/uploaded files
+  # (public/files, private/files) are skipped to avoid ballooning storage and transfer times.
+  includeFiles: false
+  # Optional Uptime Kuma push monitor URL for heartbeat & dead man's switch alerting.
+  uptimeKumaPushUrl: ""
 
 # KEDA Autoscaling for Granian web and Redis RQ background workers
 autoscaling:

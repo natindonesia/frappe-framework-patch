@@ -149,6 +149,8 @@ mariadb:
 backup:
   enabled: true
   schedule: "0 * * * *"
+  includeFiles: false # default: skips public/files and private/files to protect S3 storage
+  uptimeKumaPushUrl: "" # optional dead man's switch heartbeat
 ```
 
 ---
