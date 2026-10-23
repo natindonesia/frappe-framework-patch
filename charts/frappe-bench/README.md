@@ -67,7 +67,7 @@ oci://ghcr.io/natindonesia/charts/frappe-bench
 
 ```bash
 helm install my-bench oci://ghcr.io/natindonesia/charts/frappe-bench \
-  --version 0.2.0 \
+  --version 0.3.2 \
   --namespace my-bench-namespace \
   --create-namespace \
   -f values.yaml
@@ -91,7 +91,7 @@ spec:
     # 2. Public OCI Helm Chart
     - repoURL: ghcr.io/natindonesia/charts
       chart: frappe-bench
-      targetRevision: 0.2.0
+      targetRevision: 0.3.2
       helm:
         releaseName: my-bench
         valueFiles:
@@ -150,8 +150,15 @@ backup:
   enabled: true
   schedule: "0 * * * *"
   includeFiles: false # default: skips public/files and private/files to protect S3 storage
-  uptimeKumaPushUrl: "" # optional dead man's switch heartbeat
+  uptimeKumaPushSecretName: "my-bench-backup-kuma"
+  uptimeKumaPushSecretKey: url
 ```
+
+The Secret's `url` key should contain the Uptime Kuma push endpoint. Successful
+heartbeats include the compressed database and config archive sizes in bytes,
+their combined artifact size, and elapsed seconds in the push message. Failures
+send a down heartbeat. Uploaded site files remain excluded unless
+`includeFiles` is enabled.
 
 ---
 

@@ -46,15 +46,21 @@ spec:
                 - -c
                 - |
                   set -euo pipefail
-{{- if .Values.backup.uptimeKumaPushUrl }}
-                  KUMA_PUSH_URL={{ .Values.backup.uptimeKumaPushUrl | quote }}
+{{- if or .Values.backup.uptimeKumaPushUrl .Values.backup.uptimeKumaPushSecretName }}
+                  push_kuma() {
+                    curl -fsS -G "${KUMA_PUSH_URL}" \
+                      --data-urlencode "status=$1" \
+                      --data-urlencode "msg=$2" \
+                      --data-urlencode "ping=$3" || true
+                  }
                   notify_failure() {
                     echo "MariaDB dump or config archive failed!" >&2
-                    curl -fsS "${KUMA_PUSH_URL}?status=down&msg=DB+Dump+Failed" || true
+                    push_kuma down "MariaDB dump or config archive failed" 0
                   }
                   trap notify_failure ERR
 {{- end }}
 
+                  echo "$(date +%s)" > /backup/backup-started-at
                   TS="$(date -u +%Y%m%d_%H%M%S)"
                   OUT="/backup/{{ include "frappe-bench.canonicalName" . }}-db-${TS}.sql.gz"
                   echo "Starting hourly MariaDB dump -> ${OUT}"
@@ -75,6 +81,9 @@ spec:
                   echo "Checking /sites health and archiving configurations..."
                   if [ ! -f /sites/common_site_config.json ]; then
                     echo "FATAL: /sites/common_site_config.json missing! Volume may be unmounted or corrupt." >&2
+{{- if or .Values.backup.uptimeKumaPushUrl .Values.backup.uptimeKumaPushSecretName }}
+                    notify_failure
+{{- end }}
                     exit 1
                   fi
                   CFG_OUT="/backup/{{ include "frappe-bench.canonicalName" . }}-configs-${TS}.tar.gz"
@@ -84,6 +93,9 @@ spec:
                     $( [ -f apps.txt ] && echo "apps.txt" ) \
                     $(find . -maxdepth 2 -name "site_config.json" | sed 's|^\./||')
                   echo "Config archive created: $(ls -lh "${CFG_OUT}")"
+                  DB_BYTES=$(wc -c < "${OUT}" | tr -d ' ')
+                  CONFIG_BYTES=$(wc -c < "${CFG_OUT}" | tr -d ' ')
+                  echo "Backup artifact sizes: db_bytes=${DB_BYTES}, config_bytes=${CONFIG_BYTES}, total_bytes=$((DB_BYTES + CONFIG_BYTES))"
               env:
                 - name: MYSQL_HOST
                   value: {{ .Values.backend.db.host }}
@@ -92,6 +104,16 @@ spec:
                     secretKeyRef:
                       name: {{ default (printf "%s-mariadb" (include "frappe-bench.canonicalName" .)) .Values.backend.db.secretName }}
                       key: {{ default "mariadb-root-password" .Values.backend.db.secretKey }}
+{{- if .Values.backup.uptimeKumaPushSecretName }}
+                - name: KUMA_PUSH_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.backup.uptimeKumaPushSecretName }}
+                      key: {{ default "url" .Values.backup.uptimeKumaPushSecretKey }}
+{{- else if .Values.backup.uptimeKumaPushUrl }}
+                - name: KUMA_PUSH_URL
+                  value: {{ .Values.backup.uptimeKumaPushUrl | quote }}
+{{- end }}
               volumeMounts:
                 - name: backup-scratch
                   mountPath: /backup
@@ -117,13 +139,18 @@ spec:
                 - -c
                 - |
                   set -eu
-                  START_TS=$(date +%s)
+                  START_TS=$(cat /backup/backup-started-at)
                   HOUR="$(date -u +%H)"
-{{- if .Values.backup.uptimeKumaPushUrl }}
-                  KUMA_PUSH_URL={{ .Values.backup.uptimeKumaPushUrl | quote }}
+{{- if or .Values.backup.uptimeKumaPushUrl .Values.backup.uptimeKumaPushSecretName }}
+                  push_kuma() {
+                    curl -fsS -G "${KUMA_PUSH_URL}" \
+                      --data-urlencode "status=$1" \
+                      --data-urlencode "msg=$2" \
+                      --data-urlencode "ping=$3" || true
+                  }
                   notify_failure() {
                     echo "S3 backup upload failed!" >&2
-                    curl -fsS "${KUMA_PUSH_URL}?status=down&msg=S3+Upload+Failed" || true
+                    push_kuma down "S3 backup upload failed" 0
                   }
                   trap notify_failure ERR
 {{- end }}
@@ -131,6 +158,9 @@ spec:
 
                   if [ ! -f /sites/common_site_config.json ]; then
                     echo "FATAL: /sites volume appears empty or missing! Aborting upload to protect remote backup." >&2
+{{- if or .Values.backup.uptimeKumaPushUrl .Values.backup.uptimeKumaPushSecretName }}
+                    notify_failure
+{{- end }}
                     exit 1
                   fi
 
@@ -188,13 +218,31 @@ spec:
 {{- end }}
 
                   DURATION=$(( $(date +%s) - START_TS ))
-                  echo "Backup completed successfully in ${DURATION}s."
-{{- if .Values.backup.uptimeKumaPushUrl }}
-                  curl -fsS "${KUMA_PUSH_URL}?status=up&msg=Backup+OK&ping=${DURATION}" || true
+                  DB_FILE=$(find /backup -maxdepth 1 -type f -name '*.sql.gz' -print -quit)
+                  CONFIG_FILE=$(find /backup -maxdepth 1 -type f -name '*configs-*.tar.gz' -print -quit)
+                  DB_BYTES=$(wc -c < "${DB_FILE}" | tr -d ' ')
+                  CONFIG_BYTES=$(wc -c < "${CONFIG_FILE}" | tr -d ' ')
+                  TOTAL_BYTES=$((DB_BYTES + CONFIG_BYTES))
+                  DURATION_MS=$((DURATION * 1000))
+                  echo "Backup completed in ${DURATION}s: db_bytes=${DB_BYTES}, config_bytes=${CONFIG_BYTES}, artifact_bytes=${TOTAL_BYTES}"
+{{- if or .Values.backup.uptimeKumaPushUrl .Values.backup.uptimeKumaPushSecretName }}
+                  push_kuma up "Backup OK in ${DURATION}s: db_bytes=${DB_BYTES}, config_bytes=${CONFIG_BYTES}, artifact_bytes=${TOTAL_BYTES}" "${DURATION_MS}"
 {{- end }}
               envFrom:
                 - secretRef:
                     name: {{ default (printf "%s-backup-s3" (include "frappe-bench.canonicalName" .)) .Values.backup.secretName }}
+{{- if .Values.backup.uptimeKumaPushSecretName }}
+              env:
+                - name: KUMA_PUSH_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.backup.uptimeKumaPushSecretName }}
+                      key: {{ default "url" .Values.backup.uptimeKumaPushSecretKey }}
+{{- else if .Values.backup.uptimeKumaPushUrl }}
+              env:
+                - name: KUMA_PUSH_URL
+                  value: {{ .Values.backup.uptimeKumaPushUrl | quote }}
+{{- end }}
               volumeMounts:
                 - name: backup-scratch
                   mountPath: /backup

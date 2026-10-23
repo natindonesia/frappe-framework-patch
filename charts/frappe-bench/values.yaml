@@ -212,6 +212,9 @@ backup:
   includeFiles: false
   # Optional Uptime Kuma push monitor URL for heartbeat & dead man's switch alerting.
   uptimeKumaPushUrl: ""
+  # Prefer a namespace-scoped Secret for the push URL so its token stays out of Helm values.
+  uptimeKumaPushSecretName: ""
+  uptimeKumaPushSecretKey: url
 
 # KEDA Autoscaling for Granian web and Redis RQ background workers
 autoscaling:
