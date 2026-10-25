@@ -44,6 +44,9 @@ spec:
           command: ["/bin/bash", "-c"]
           args:
             {{- toYaml .Values.socketio.args | nindent 12 }}
+          env:
+            - name: FRAPPE_BACKEND_URL
+              value: {{ default (printf "http://web:%v" .Values.web.servicePort) .Values.socketio.backendUrl | quote }}
           ports:
             - containerPort: {{ .Values.socketio.servicePort }}
               name: socketio
