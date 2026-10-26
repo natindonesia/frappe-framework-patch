@@ -32,11 +32,11 @@ declare global {
 
 const cfg: RumConfig = Object.assign(
   {
-    endpoint: `${location.origin}/ingest`,
-    serviceName: 'fayolex-working-staging-browser',
-    environment: 'staging',
+    endpoint: location.origin,
+    serviceName: 'fayolex-working-staging-rum-browser',
+    environment: 'fayolex-working-staging',
     sampleRate: 1.0,
-    ignoredUrls: [/api\/method\/ping$/, /socket\.io/, /__rum\.js$/, /\/ingest\//],
+    ignoredUrls: [/api\/method\/ping$/, /socket\.io/, /__rum\.js$/, /\/v1\/traces$/],
   },
   window.__RUM_CONFIG || {}
 );
