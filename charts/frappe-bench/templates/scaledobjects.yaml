@@ -14,7 +14,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: web
-  minReplicaCount: {{ default 1 .Values.autoscaling.web.minReplicas }}
+  minReplicaCount: {{ if hasKey .Values.autoscaling.web "minReplicas" }}{{ .Values.autoscaling.web.minReplicas }}{{ else }}1{{ end }}
   maxReplicaCount: {{ default 3 .Values.autoscaling.web.maxReplicas }}
   pollingInterval: {{ default 5 .Values.autoscaling.web.pollingInterval }}
   cooldownPeriod: {{ default 60 .Values.autoscaling.web.cooldownPeriod }}
@@ -58,7 +58,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: worker-{{ $wName }}
-  minReplicaCount: {{ default 1 $wConfig.minReplicas }}
+  minReplicaCount: {{ if hasKey $wConfig "minReplicas" }}{{ $wConfig.minReplicas }}{{ else }}1{{ end }}
   maxReplicaCount: {{ default 5 $wConfig.maxReplicas }}
   cooldownPeriod: {{ default 60 $wConfig.cooldownPeriod }}
   pollingInterval: {{ default 5 $wConfig.pollingInterval }}
