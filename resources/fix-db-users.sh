@@ -1,49 +1,96 @@
 #!/bin/bash
-# fix-db-users.sh — Post-bootstrap loop that creates '@'%'' users for every existing Frappe site.
-# Runs inside the init container after bench setup.
-# Requires: jq, mysql client, MYSQL_ROOT_PASSWORD env var, activated bench venv.
+# fix-db-users.sh — Ensure every MariaDB-backed Frappe site has a wildcard-host
+# DB user. Pod IPs are ephemeral; a grant pinned to an old pod IP breaks the
+# site after the next rollout.
+#
+# Idempotent: creates/updates '<db_user>'@'%' from site_config.json, grants the
+# site database, then removes stale non-wildcard rows for the same user.
+#
 # Environment variables:
-#   DB_ROOT_USER  — MariaDB root user (default: root)
-#   DB_HOST       — MariaDB host (default: mariadb)
+#   DB_ROOT_USER          — MariaDB root user (default: root)
+#   DB_HOST               — MariaDB host (default: mariadb)
+#   MYSQL_ROOT_PASSWORD   — required
+set -euo pipefail
 
 : "${DB_ROOT_USER:=root}"
 : "${DB_HOST:=mariadb}"
+: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}"
 
-echo "[fix-db-users] Ensuring DB users have @'%' grants for horizontal scaling..."
-echo ""
+SITES_DIR="${SITES_DIR:-/home/frappe/frappe-bench/sites}"
 
-for CURRENT_SITE_NAME in $(cd /home/frappe/frappe-bench/sites && ls -d */ 2>/dev/null | sed 's|/||g' | tr -d '\r'); do
+for cmd in jq mysql; do
+	command -v "$cmd" >/dev/null 2>&1 || {
+		echo "[fix-db-users] ERROR: required command not found: $cmd" >&2
+		exit 1
+	}
+done
 
-    if [ -z "$CURRENT_SITE_NAME" ] || [ "$CURRENT_SITE_NAME" = "assets" ]; then continue; fi
+sql_escape() {
+	local value=$1
+	value=${value//\\/\\\\}
+	value=${value//\'/\'\'}
+	printf '%s' "$value"
+}
 
-    SITE_CONFIG_PATH="/home/frappe/frappe-bench/sites/${CURRENT_SITE_NAME}/site_config.json"
+mysql_exec() {
+	MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql \
+		--protocol=TCP \
+		--host="$DB_HOST" \
+		--user="$DB_ROOT_USER" \
+		--batch --skip-column-names \
+		--execute="$1"
+}
 
-    if [ -f "${SITE_CONFIG_PATH}" ]; then
-        DB_NAME_CREATED=$(jq -r .db_name "${SITE_CONFIG_PATH}" | tr -d '\r')
-        DB_PASSWORD_CREATED=$(jq -r .db_password "${SITE_CONFIG_PATH}" | tr -d '\r')
-        DB_USER_CREATED=${DB_NAME_CREATED}
+echo "[fix-db-users] Ensuring DB users have @'%' grants..."
 
-        echo "[fix-db-users] Target DB: ${DB_NAME_CREATED}  User: ${DB_USER_CREATED}"
+for site_dir in "$SITES_DIR"/*/; do
+	site_name=$(basename "$site_dir")
+	[ "$site_name" = "assets" ] && continue
 
-        SQL_COMMAND="CREATE USER IF NOT EXISTS '${DB_USER_CREATED}'@'%' IDENTIFIED BY '${DB_PASSWORD_CREATED}';
-GRANT ALL PRIVILEGES ON \`${DB_NAME_CREATED}\`.* TO '${DB_USER_CREATED}'@'%';
+	site_config="$site_dir/site_config.json"
+	if [ ! -f "$site_config" ]; then
+		echo "[fix-db-users] WARNING: config not found for $site_name"
+		continue
+	fi
+
+	db_type=$(jq -r '.db_type // "mariadb"' "$site_config")
+	[ "$db_type" = "mariadb" ] || continue
+
+	db_name=$(jq -r '.db_name // empty' "$site_config")
+	db_user=$(jq -r '.db_user // empty' "$site_config")
+	db_password=$(jq -r '.db_password // empty' "$site_config")
+
+	if [ -z "$db_name" ] || [ -z "$db_password" ]; then
+		echo "[fix-db-users] ERROR: incomplete DB config for $site_name" >&2
+		exit 1
+	fi
+	db_user=${db_user:-$db_name}
+
+	db_name_sql=$(sql_escape "$db_name")
+	db_user_sql=$(sql_escape "$db_user")
+	db_password_sql=$(sql_escape "$db_password")
+
+	echo "[fix-db-users] Target: $site_name -> ${db_user}@% (${db_name})"
+
+	mysql_exec "
+CREATE USER IF NOT EXISTS '${db_user_sql}'@'%' IDENTIFIED BY '${db_password_sql}';
+ALTER USER '${db_user_sql}'@'%' IDENTIFIED BY '${db_password_sql}';
+GRANT ALL PRIVILEGES ON \`${db_name_sql}\`.* TO '${db_user_sql}'@'%';
 FLUSH PRIVILEGES;"
 
-        echo "[fix-db-users] Executing SQL..."
+	# Remove stale host-scoped duplicates (typically an old pod IP). The
+	# wildcard user above now carries the authoritative site_config password.
+	stale_hosts=$(mysql_exec "SELECT host FROM mysql.user WHERE user='${db_user_sql}' AND host <> '%';")
+	if [ -n "$stale_hosts" ]; then
+		while IFS= read -r stale_host; do
+			[ -n "$stale_host" ] || continue
+			stale_host_sql=$(sql_escape "$stale_host")
+			mysql_exec "DROP USER IF EXISTS '${db_user_sql}'@'${stale_host_sql}'; FLUSH PRIVILEGES;"
+			echo "[fix-db-users] Dropped stale grant ${db_user}@${stale_host}"
+		done <<< "$stale_hosts"
+	fi
 
-        mysql -u "${DB_ROOT_USER}" -p"${MYSQL_ROOT_PASSWORD}" -h "${DB_HOST}" -e "${SQL_COMMAND}"
-
-        if [ $? -eq 0 ]; then
-            echo "[fix-db-users] SUCCESS: Grants updated for ${CURRENT_SITE_NAME}"
-        else
-            echo "[fix-db-users] ERROR: MySQL command failed for ${CURRENT_SITE_NAME}"
-            echo "[fix-db-users] Failed SQL: ${SQL_COMMAND}"
-        fi
-    else
-        echo "[fix-db-users] WARNING: Config not found for ${CURRENT_SITE_NAME}"
-    fi
-
-    echo ""
+	echo "[fix-db-users] OK: $site_name"
 done
 
 echo "[fix-db-users] Done."

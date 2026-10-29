@@ -1,8 +1,16 @@
 #!/bin/bash
 # init.sh — Frappe bench init container entrypoint.
 # Creates/reconfigures the site and ensures DB user grants for horizontal scaling.
-set -e
-set -x
+set -euo pipefail
+
+: "${SITE_NAME:?SITE_NAME is required}"
+: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}"
+
+FIX_DB_USERS=/scripts/fix-db-users.sh
+if [ ! -x "$FIX_DB_USERS" ]; then
+  echo "[init] ERROR: $FIX_DB_USERS missing or not executable" >&2
+  exit 1
+fi
 
 cd /home/frappe/frappe-bench
 . env/bin/activate
@@ -35,13 +43,9 @@ if [ ! -d "sites/${SITE_NAME}" ]; then
   fi
 
   bench --site "${SITE_NAME}" set-config developer_mode 1
-  if [ -f "/scripts/fix-db-users.sh" ]; then
-    bash /scripts/fix-db-users.sh
-  fi
+  bash "$FIX_DB_USERS"
 else
-  if [ -f "/scripts/fix-db-users.sh" ]; then
-    bash /scripts/fix-db-users.sh
-  fi
+  bash "$FIX_DB_USERS"
   bench --site all migrate
 fi
 
