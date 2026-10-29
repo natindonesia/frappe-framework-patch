@@ -55,25 +55,17 @@ spec:
             - containerPort: {{ .Values.nginx.servicePort }}
               name: http
           readinessProbe:
-            httpGet:
-              path: /api/method/ping
+            tcpSocket:
               port: {{ .Values.nginx.servicePort }}
-              httpHeaders:
-                - name: Host
-                  value: {{ include "frappe-bench.primaryHost" . }}
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
           livenessProbe:
-            httpGet:
-              path: /api/method/ping
+            tcpSocket:
               port: {{ .Values.nginx.servicePort }}
-              httpHeaders:
-                - name: Host
-                  value: {{ include "frappe-bench.primaryHost" . }}
-            initialDelaySeconds: 60
-            periodSeconds: 20
-            timeoutSeconds: 5
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
           volumeMounts:
             - name: sites-data
               mountPath: /home/frappe/frappe-bench/sites

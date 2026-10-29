@@ -81,7 +81,12 @@ data:
                 state["last_updated"] = now
                 state["healthy"] = True
             except Exception:
-                state["healthy"] = False
+                # If web pod is scaled to 0 or restarting, adapter remains healthy
+                state["blocking_queue"] = 0.0
+                state["sustained_queue"] = 0.0
+                state["active_connections"] = 0.0
+                state["workers_alive"] = 0
+                state["healthy"] = True
             time.sleep(0.2)
 
     def poll_redis():
