@@ -265,17 +265,64 @@ When evaluating radical scale targets (**10,000**, **100,000**, or **1,000,000 R
 
 ### Component-by-Component Maximum Limits Matrix
 
-| Component | Architecture Model | Peak Tested Limit | Hardware Specs of Benchmark | Primary Limiting Bottleneck | Official Source & Reference |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Granian (RSGI/Raw)** | Rust (`hyper` + `tokio`) | **~1,400,000 RPS** | Modern multi-core x86_64, `oha` c128 load | Python C-API serialization boundary | [Granian Official Benchmarks](https://github.com/emmett-framework/granian/tree/master/benchmarks) |
-| **Granian (ASGI / FastAPI)** | Rust event loop $\to$ `uvloop` | **~125,500 RPS** | AMD/Intel 16+ Cores, minimal JSON echo | Python async task scheduling | [Granian vs. ASGI Benchmarks](https://github.com/emmett-framework/granian/blob/master/benchmarks/vs.md) |
-| **Granian (WSGI / Frappe)** | Rust $\to$ Python C-GIL threads | **~1,500 – 4,500 RPS** | AMD Ryzen 9 5950X (16C/32T), Frappe ORM | **Python GIL & ORM object allocation** | *Measured in Live Cluster* |
-| **MariaDB (Thread Pool)** | C++ in-memory InnoDB (`pool-of-threads`) | **~48,000 – 50,000 QPS** | 32-core Xeon/EPYC, Sysbench `oltp_read_only` (2k–5k connections) | InnoDB Buffer Pool mutex & latch contention | [MariaDB Thread Pool in MariaDB](https://mariadb.com/kb/en/thread-pool-in-mariadb/) |
-| **MariaDB (SATA SSD Writes)** | InnoDB Redo Log + ACID sync | **~1,500 – 3,000 TPS** | 2x SATA 6Gbps SSDs Software RAID-1 | **Drive queue depth & flash block write latency (fsync)** | *Measured on bare-metal host* |
-| **Redis (Standard)** | C Single-Threaded Core | **~150,000 – 250,000 ops/s** | Intel Xeon / AWS c6gn, `redis-benchmark` | **Single CPU core saturation** | [Redis Core Optimization Benchmarks](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/benchmarks/) |
-| **Dragonfly DB (Drop-in)** | C++ Thread-per-core (`io_uring`) | **~4,000,000 – 6,000,000 ops/s**| AWS c6gn.16xlarge (64 vCPU, 100Gbps network) | Memory bus bandwidth & NIC packet rate | [Dragonfly Architecture Benchmarks](https://www.dragonflydb.io/benchmarks) |
-| **Nginx (Edge Proxy)** | C `epoll` Event-Driven | **~400,000 – 500,000+ RPS** | Bare-metal multi-core, `wrk` keepalive, tiny payload | Linux socket file descriptors & CPU interrupt queues (`softirq`) | [NGINX Bare-Metal Tuning Guide](https://www.nginx.com/blog/tuning-nginx/) |
-| **Physical 1 Gbps NIC** | Gigabit Ethernet PHY | **~60,000 – 80,000 RPS** | Standard 1 Gbps port (at 1.5–2 KB HTTP response) | **Physical wire bandwidth: 125 MB/s** | *IEEE 802.3 Ethernet Standard* |
+| Component | Architecture & Concurrency Model | Task & Workload Type Tested | Read/Write Ratio | Peak Tested Limit | Hardware Specs of Benchmark | Primary Limiting Bottleneck | Official Source & Reference |
+| :--- | :--- | :--- | :---: | :--- | :--- | :--- | :--- |
+| **Granian (RSGI/Raw)** | Rust async event loop (`hyper` + `tokio`) | **Synthetic Plaintext Echo (10B / 1KB)** | 100% Read (0% Write) | **~1,400,000 RPS** | Modern multi-core x86_64, `oha` c128 load | Python C-API serialization boundary | [Granian Official Benchmarks](https://github.com/emmett-framework/granian/tree/master/benchmarks) |
+| **Granian (ASGI / FastAPI)** | Rust event loop $\to$ Python `uvloop` (Async) | **Async JSON Echo / Simple Async I/O** | 100% Read (0% Write) | **~125,500 RPS** | AMD/Intel 16+ Cores, minimal JSON echo | Python async task scheduling & event loop overhead | [Granian vs. ASGI Benchmarks](https://github.com/emmett-framework/granian/blob/master/benchmarks/vs.md) |
+| **Granian (WSGI / Frappe Pure Read)** | Rust async receiver $\to$ Sync Worker Threads | **Dynamic ORM Query (`GET /api/resource/ToDo`)** | 100% Read (0% Write) | **~1,385 – 1,520 RPS** (1 pod burst) | AMD Ryzen 9 5950X (16C/32T), Frappe ORM + Redis Auth Cache | **Python GIL & ORM object allocation** | *Measured in Live Cluster* |
+| **Granian (WSGI / Frappe Full CRUD)** | Rust async receiver $\to$ Sync Worker Threads | **Full Transactional CRUD (Login $\to$ C $\to$ R $\to$ U $\to$ L $\to$ D)** | **50% Write / 33% Read / 17% Auth** | **~224 – 235 RPS** (multi-pod) | AMD Ryzen 9 5950X (16C/32T), 12 workers, SATA SSD RAID-1 | **Database row locks (`tabToDo`) & RQ background tasks** | *Measured in Live Cluster* |
+| **MariaDB (Thread Pool Read)** | C++ in-memory InnoDB (`pool-of-threads`) | **Sysbench `oltp_read_only` (Point & Range Selects)** | 100% Read (0% Write) | **~48,000 – 50,000 QPS** | 32-core Xeon/EPYC, 2k–5k concurrent connections | InnoDB Buffer Pool mutex & `btr_search_latch` contention | [MariaDB Thread Pool in MariaDB](https://mariadb.com/kb/en/thread-pool-in-mariadb/) |
+| **MariaDB (SATA SSD Writes)** | C++ InnoDB Redo Log + ACID sync (`sync_binlog=1`) | **Sysbench `oltp_read_write` & Transactional Inserts** | 100% Write (Transactional) | **~1,500 – 3,000 TPS** | 2x SATA 6Gbps SSDs Software RAID-1 | **Drive queue depth & flash block write latency (fsync)** | *Measured on bare-metal host* |
+| **Redis (Standard)** | C Single-Threaded Event Loop (`epoll`) | **In-memory Key-Value (`redis-benchmark` GET/SET)** | Configurable (Typically 80% Read / 20% Write) | **~150,000 – 250,000 ops/s** | Intel Xeon / AWS c6gn, 50–100 pipeline | **Single CPU core saturation** | [Redis Core Optimization Benchmarks](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/benchmarks/) |
+| **Dragonfly DB (Drop-in)** | C++ Multi-Threaded (`io_uring`, thread-per-core) | **In-memory Key-Value (Multi-client GET/SET)** | Configurable (Typically 80% Read / 20% Write) | **~4,000,000 – 6,000,000 ops/s**| AWS c6gn.16xlarge (64 vCPU, 100Gbps network) | Memory bus bandwidth & NIC packet rate | [Dragonfly Architecture Benchmarks](https://www.dragonflydb.io/benchmarks) |
+| **Nginx (Edge Proxy)** | C Multi-Worker `epoll` Event-Driven | **Static File & In-Memory Microcache (`wrk` keepalive)** | 100% Read (0% Write) | **~400,000 – 500,000+ RPS** | Bare-metal multi-core, 12 threads, 400 connections | Linux socket file descriptors & CPU interrupt queues (`softirq`) | [NGINX Bare-Metal Tuning Guide](https://www.nginx.com/blog/tuning-nginx/) |
+| **Physical 1 Gbps NIC** | Gigabit Ethernet Hardware PHY Layer | **Raw Ethernet Frame / Packet Transmission** | Any (Symmetric Network I/O) | **~60,000 – 80,000 RPS** | Standard 1 Gbps port (at 1.5–2 KB HTTP payload) | **Physical wire bandwidth: 125 MB/s** | *IEEE 802.3 Ethernet Standard* |
+
+---
+
+### Workload Taxonomy: What Was Tested Across Each Layer
+
+To understand why throughput differs by orders of magnitude across benchmarks, workloads must be categorized into 4 fundamental task archetypes:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Workload Spectrum: From Synthetic Edge to Full Transactional CRUD                                │
+├──────────────────────────┬─────────────────┬──────────────┬──────────────────┬───────────────────┤
+│ Workload Archetype       │ Execution Model │ Read/Write % │ Database Action  │ Typical Real RPS  │
+├──────────────────────────┼─────────────────┼──────────────┼──────────────────┼───────────────────┤
+│ 1. Static / Edge Cache   │ C / Rust epoll  │ 100% Read    │ Zero DB          │ 400,000 – 500,000 │
+│ 2. Async Microservices   │ Async uvloop    │ 100% Read    │ In-memory Key    │ 50,000 – 125,000  │
+│ 3. Pure Dynamic Read     │ Sync WSGI       │ 100% Read    │ Cached DB / Read │ 1,000 – 1,500     │
+│ 4. Transactional CRUD    │ Sync WSGI       │ 50% Write    │ Full ACID Locks  │ 200 – 250         │
+└──────────────────────────┴─────────────────┴──────────────┴──────────────────┴───────────────────┘
+```
+
+#### Archetype 1: Synthetic Static & Edge Microcached (100% Read, 0% Write)
+- **Tested In:** Nginx `wrk` benchmarks and Granian `RSGI` tests.
+- **Task Description:** Returns a fixed, pre-computed string or static asset (e.g., a 128-byte to 1KB response) directly from memory buffers.
+- **Execution Model:** Fully asynchronous, event-driven, zero Python execution, zero database queries, zero disk I/O.
+- **Why It Scales to 500k+ RPS:** Handled entirely in compiled C/Rust via `epoll` and `sendfile()`, requiring only ~50,000 CPU instructions per request.
+
+#### Archetype 2: Asynchronous Microservice I/O (100% Read, 0% Write)
+- **Tested In:** Granian ASGI (FastAPI / Starlette) benchmarks.
+- **Task Description:** Minimal JSON serialization with asynchronous cooperative yielding (`async`/`await`) on a single non-blocking event loop (`uvloop`).
+- **Execution Model:** Asynchronous cooperative multitasking without thread context-switching.
+- **Why It Scales to ~125k RPS:** Avoids Python OS thread synchronization, but is still bound by Python bytecode evaluation and memory garbage collection.
+
+#### Archetype 3: Pure Dynamic Read with Database / Cache (100% Read, 0% Write)
+- **Tested In:** Our Frappe Pure Read shock benchmark (`GET /api/resource/ToDo?limit=10`).
+- **Task Description:** Client passes API key authentication headers, the framework verifies credentials against Redis cache in <0.1 ms, queries MariaDB for 10 records, formats DocType JSON, and returns the response.
+- **Execution Model:** Synchronous WSGI worker threads (12 processes, 16 blocking threads per process).
+- **Why It Caps at ~1,000 – 1,520 RPS per Pod:** Even though no database writes occur, every request executes thousands of lines of dynamic Python ORM and framework middleware.
+
+#### Archetype 4: Full Transactional CRUD (50% Write / 33% Read / 17% Auth)
+- **Tested In:** Our Frappe 6-step lifecycle shock benchmark (`POST login` $\to$ `POST ToDo` $\to$ `GET ToDo` $\to$ `PUT ToDo` $\to$ `GET list` $\to$ `DELETE ToDo`).
+- **Task Description:**
+  - **16.7% Auth:** `POST /api/method/login` (User lookup, password verify, session cookie).
+  - **50.0% Writes:** `POST` (INSERT 17 SQL queries), `PUT` (UPDATE 8 SQL queries), `DELETE` (DELETE 12 SQL queries + enqueue Dynamic Links cleanup background task).
+  - **33.3% Reads:** `GET` by ID and `GET` list query.
+- **Execution Model:** Synchronous WSGI + ACID transactions with MariaDB InnoDB row-level locking + Redis RQ background job queuing.
+- **Why It Caps at ~224 – 235 RPS:** Concurrency is heavily throttled by MariaDB row lock contention on `tabToDo` and `tabSeries`, transaction log fsync serialization, and RQ background task queuing overhead.
 
 ---
 
