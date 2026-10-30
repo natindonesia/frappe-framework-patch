@@ -66,7 +66,16 @@ Options:
 
 ## 3. Shock Test Findings Summary (1 Cold Web Pod)
 
-Benchmark progression tested against a single cold web pod with instant concurrency and zero warm-up:
+Benchmark progression tested against a single cold web pod with instant concurrency and zero warm-up.
+
+> [!IMPORTANT]
+> **What does 235 RPS represent?**
+> The 235 RPS throughput is **NOT** a synthetic `ping` or read cache hit. It is the aggregate throughput of an authentic **Interactive Login + Full Transactional CRUD** lifecycle. Every iteration executes 6 sequential HTTP calls:
+> - **16.7% Session Login** (`POST /api/method/login`): 39.2 logins/sec
+> - **50.0% Database Writes** (`POST` ToDo + `PUT` ToDo + `DELETE` ToDo): 117.5 writes/sec
+> - **33.3% Database Reads** (`GET` ToDo by ID + `GET` ToDo list query): 78.3 reads/sec
+> 
+> At peak (235.00 RPS), the single pod processed **11,904 total HTTP requests** and completed **39.17 full 6-step user lifecycles per second** with **0.00% errors**.
 
 | Concurrency (VUs) | Throughput (RPS) | Requests Processed | Error Rate (%) | Avg Latency (ms) | p90 (ms) | p95 (ms) | p99 (ms) | Web Peak CPU (cores) | MariaDB Peak CPU (cores) |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |

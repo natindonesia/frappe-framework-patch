@@ -22,14 +22,32 @@ flowchart LR
     Web -->|"port 6379"| Redis[("Redis Cache & RQ")]
 ```
 
-### Full Transactional Lifecycle (CRUD Workload)
-Each test cycle simulates authentic multi-user interactions:
-1. `POST /api/method/login` (database credentials check, Redis session cookie minting)
-2. `POST /api/resource/ToDo` (document creation with validation, DB insert, dynamic link generation)
-3. `GET /api/resource/ToDo/{id}` (primary key read)
-4. `PUT /api/resource/ToDo/{id}` (document update, state transition)
-5. `GET /api/resource/ToDo?limit=10` (index-filtered list query)
-6. `DELETE /api/resource/ToDo/{id}` (document trash, cascading dynamic link cleanup, background enqueue)
+### Full Transactional Lifecycle (Login + CRUD Workload)
+The benchmark does **NOT** measure a synthetic `ping` or static cache endpoint. Every virtual user executes an authentic, end-to-end **6-step user journey** sequentially with zero sleep:
+
+1. **Session Login** (`POST /api/method/login`): User credentials lookup in `tabUser`, password verification, and Redis session cookie minting.
+2. **Create Document** (`POST /api/resource/ToDo`): Document validation (`validate()`), permission checks, DB row insert, and dynamic link generation.
+3. **Read Document** (`GET /api/resource/ToDo/{id}`): Single-record lookup by primary key.
+4. **Update Document** (`PUT /api/resource/ToDo/{id}`): Document fetch, state mutation (`Open` $\to$ `Closed`), and dirty field write to MariaDB.
+5. **List Query** (`GET /api/resource/ToDo?limit=10`): Query-builder table select with filtering and limits.
+6. **Delete Document** (`DELETE /api/resource/ToDo/{id}`): Document trash, cascading dynamic link cleanup, and background job enqueueing.
+
+#### Exact Request Breakdown at Peak (235.00 Total RPS at 50 VUs)
+Out of **11,904 total HTTP requests** processed in 50.65 seconds (**1,984 complete cycles** completed = **39.17 complete user cycles / sec**):
+
+| Operation | HTTP Method & Route | Category | Ratio | Processed Count | Sustained Rate |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **1. Session Login** | `POST /api/method/login` | Auth / Session | 16.7% | 1,984 | **39.17 req/s** |
+| **2. Create Document** | `POST /api/resource/ToDo` | **DB Write** | 16.7% | 1,984 | **39.17 req/s** |
+| **3. Read Document** | `GET /api/resource/ToDo/{id}` | **DB Read** | 16.7% | 1,984 | **39.17 req/s** |
+| **4. Update Document** | `PUT /api/resource/ToDo/{id}` | **DB Write** | 16.7% | 1,984 | **39.17 req/s** |
+| **5. List Query** | `GET /api/resource/ToDo?limit=10` | **DB Read** | 16.7% | 1,984 | **39.17 req/s** |
+| **6. Delete Document** | `DELETE /api/resource/ToDo/{id}` | **DB Write** | 16.7% | 1,984 | **39.17 req/s** |
+| **TOTAL** | — | **Mixed** | **100%** | **11,904** | **235.00 RPS** |
+
+- **Pure Database Writes:** **50.0%** (117.5 writes/sec: Create + Update + Delete).
+- **Database Reads:** **33.3%** (78.3 reads/sec: Read + List).
+- **Interactive Authentication:** **16.7%** (39.2 logins/sec).
 
 ---
 
