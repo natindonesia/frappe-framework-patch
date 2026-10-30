@@ -1,0 +1,112 @@
+diff --git a/frappe/auth.py b/frappe/auth.py
+index c3c83f1ac9..03a474f699 100644
+--- a/frappe/auth.py
++++ b/frappe/auth.py
+@@ -724,6 +724,20 @@ def validate_api_key_secret(api_key, api_secret, frappe_authorization_source=Non
+ 		raise frappe.AuthenticationError
+ 
+ 	doctype = frappe_authorization_source or "User"
++	if doctype == "User":
++		try:
++			cache = frappe.cache
++			cached = cache.get_value(f"api_auth_cache:{api_key}")
++			if cached and isinstance(cached, dict):
++				import hmac
++				if hmac.compare_digest(cached.get("secret", ""), api_secret):
++					user = cached.get("user")
++					if frappe.local.login_manager.user in ("", "Guest"):
++						frappe.set_user(user)
++					return
++		except Exception:
++			pass
++
+ 	try:
+ 		docname = frappe.db.get_value(
+ 			doctype=doctype, filters={"api_key": api_key, "enabled": True}, fieldname=["name"]
+@@ -743,6 +757,14 @@ def validate_api_key_secret(api_key, api_secret, frappe_authorization_source=Non
+ 		if frappe.local.login_manager.user in ("", "Guest"):
+ 			frappe.set_user(user)
+ 		frappe.local.form_dict = form_dict
++
++		if doctype == "User":
++			try:
++				cache = frappe.cache
++				cache.set_value(f"api_auth_cache:{api_key}", {"user": user, "secret": doc_secret}, expires_in_sec=300)
++				cache.set_value(f"user_api_key:{user}", api_key, expires_in_sec=300)
++			except Exception:
++				pass
+ 	else:
+ 		raise frappe.AuthenticationError
+ 
+diff --git a/frappe/cache_manager.py b/frappe/cache_manager.py
+index fc4cb7e0d1..db991498f4 100644
+--- a/frappe/cache_manager.py
++++ b/frappe/cache_manager.py
+@@ -88,11 +88,24 @@ def clear_user_cache(user=None):
+ 	if user:
+ 		frappe.cache.hdel_names(user_cache_keys, user)
+ 		frappe.cache.delete_keys("user:" + user)
++		# Invalidate cached API key authentication credentials for this user
++		try:
++			api_key = frappe.cache.get_value(f"user_api_key:{user}")
++			if api_key:
++				frappe.cache.delete_value(f"api_auth_cache:{api_key}")
++				frappe.cache.delete_value(f"user_api_key:{user}")
++		except Exception:
++			pass
+ 		clear_defaults_cache(user)
+ 	else:
+ 		frappe.cache.delete_key(user_cache_keys)
+ 		clear_defaults_cache()
+ 		clear_global_cache()
++		try:
++			frappe.cache.delete_keys("api_auth_cache:*")
++			frappe.cache.delete_keys("user_api_key:*")
++		except Exception:
++			pass
+ 
+ 
+ def clear_domain_cache(user=None):
+diff --git a/frappe/core/doctype/user/user.py b/frappe/core/doctype/user/user.py
+index 8c7900cdc7..d8162e00bf 100644
+--- a/frappe/core/doctype/user/user.py
++++ b/frappe/core/doctype/user/user.py
+@@ -323,6 +323,14 @@ class User(Document):
+ 		self.share_with_self()
+ 		clear_notifications(user=self.name)
+ 		frappe.clear_cache(user=self.name)
++		try:
++			if self.api_key:
++				frappe.cache.delete_value(f"api_auth_cache:{self.api_key}")
++			old_doc = self.get_doc_before_save()
++			if old_doc and old_doc.api_key:
++				frappe.cache.delete_value(f"api_auth_cache:{old_doc.api_key}")
++		except Exception:
++			pass
+ 		now = frappe.in_test or frappe.flags.in_install
+ 		self.send_password_notification(self.__new_password)
+ 		frappe.enqueue(
+@@ -589,6 +597,11 @@ class User(Document):
+ 
+ 	def on_trash(self):
+ 		frappe.clear_cache(user=self.name)
++		try:
++			if self.api_key:
++				frappe.cache.delete_value(f"api_auth_cache:{self.api_key}")
++		except Exception:
++			pass
+ 		if self.name in STANDARD_USERS:
+ 			throw(_("User {0} cannot be deleted").format(self.name))
+ 
+@@ -1440,6 +1453,11 @@ def generate_keys(user: str):
+ 		user_details.api_key = api_key
+ 	user_details.api_secret = api_secret
+ 	user_details.save()
++	try:
++		frappe.cache.delete_value(f"api_auth_cache:{user_details.api_key}")
++		frappe.cache.delete_value(f"user_api_key:{user}")
++	except Exception:
++		pass
+ 
+ 	return {"api_key": user_details.api_key, "api_secret": api_secret}
+ 
