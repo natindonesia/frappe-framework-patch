@@ -51,7 +51,35 @@ Out of **11,904 total HTTP requests** processed in 50.65 seconds (**1,984 comple
 
 ---
 
-## 3. Shock Load Progression (Instant Concurrency, 1 Cold Web Pod)
+## 3. Hardware Specifications & Test Environment
+
+To ensure results are directly comparable across environments, the benchmark was conducted on dedicated bare metal infrastructure with the following specifications:
+
+### Bare Metal Host Hardware
+| Specification | Details |
+| :--- | :--- |
+| **CPU Model** | AMD Ryzen 9 5950X (Zen 3 Architecture) |
+| **Cores / Threads** | 16 physical cores, 32 hardware threads |
+| **Clock Frequency** | 3.4 GHz base / up to 4.90 GHz boost |
+| **CPU Cache** | 64 MB L3 Cache (2x 32MB CCDs), 8 MB L2 Cache, 1 MB L1 Cache |
+| **Memory (RAM)** | 128 GB DDR4 ECC RAM (3200 MHz) |
+| **Storage Subsystem** | 2x 500 GB SATA SSDs (Samsung SSD 870, SATA 6Gbps) in Software RAID-1 (NOT NVMe) |
+| **Network Interface** | 1 Gbps / 10 Gbps Uplink |
+| **Operating System** | Ubuntu 24.04 LTS (Linux 6.8 x86_64) |
+| **Kubernetes Platform** | Kubernetes v1.36.x, Container Runtime `CRI-O` |
+| **Cluster CNI** | Cilium with eBPF native packet routing |
+
+### Workload Container Limits & Allocation
+| Pod Component | CPU Request | CPU Limit | Memory Request | Memory Limit | Storage Class |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Web Container (`web`)** | 100 mCPU | Uncapped (burstable) | 512 MiB | 2.0 GiB | Shared PVC |
+| **Nginx Edge (`nginx`)** | 50 mCPU | Uncapped (burstable) | 64 MiB | 256 MiB | Ephemeral |
+| **MariaDB (`mariadb`)** | 30 mCPU | Uncapped (burstable) | 512 MiB | 2.0 GiB | 10 GiB Local Storage (SATA SSD RAID-1) |
+| **Redis Cache (`redis`)** | 50 mCPU | 500 mCPU | 64 MiB | 256 MiB | Ephemeral |
+
+---
+
+## 4. Shock Load Progression (Instant Concurrency, 1 Cold Web Pod)
 
 | Concurrency (VUs) | Throughput (RPS) | Requests Processed | Error Rate (%) | Avg Latency (ms) | p90 Latency (ms) | p95 Latency (ms) | p99 Latency (ms) | Web Peak CPU (cores) | MariaDB Peak CPU (cores) |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -65,13 +93,50 @@ Out of **11,904 total HTTP requests** processed in 50.65 seconds (**1,984 comple
 
 ---
 
-## 4. Key Performance Insights & Bottleneck Isolation
+## 5. Key Performance Insights & Bottleneck Isolation
 
-### 1. Database (MariaDB) is NOT the Bottleneck
+### 1. Database (MariaDB) is NOT the Bottleneck & Tuning Breakdown
 - **Buffer Pool Hit Ratio:** **99.96%** (16.89M logical reads, only 6,235 disk reads).
 - **CPU Utilization:** Under peak 120-VU shock, MariaDB consumed only **1.44 cores peak** and averaged ~380 mCPU.
 - **Connections:** Active connections peaked at 16 / 200 (8% capacity). Slow query log reported 0 slow queries.
 - **Verdict:** MariaDB is exceptionally efficient and easily sustains the full transactional load.
+
+#### Production MariaDB Configuration (`my.cnf`)
+The database ran with the following tuned parameters to eliminate disk I/O serialization and buffer lockups:
+
+```ini
+[mysqld]
+# Binary Logging & Replication
+log-bin = mariadb-bin
+binlog_format = ROW
+sync_binlog = 1
+gtid_strict_mode = OFF
+
+# InnoDB Engine Tuning
+innodb_buffer_pool_size = 1G
+innodb_log_file_size = 256M
+innodb_flush_method = O_DIRECT
+innodb_io_capacity = 200
+innodb_read_io_threads = 4
+innodb_write_io_threads = 4
+skip_innodb_read_only_compressed
+
+# Connection & Packet Management
+max_connections = 200
+max_allowed_packet = 256M
+skip_name_resolve
+
+# Internationalization & Encoding
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+skip-character-set-client-handshake
+```
+
+#### Why These Parameters Matter
+1. **`innodb_flush_method = O_DIRECT`:** Bypasses OS filesystem page cache for data files, preventing double buffering in RAM and leaving system memory free for the InnoDB buffer pool.
+2. **`innodb_buffer_pool_size = 1G` & `innodb_log_file_size = 256M`:** Ensures the entire working dataset of DocTypes, accounts, and session tables fits comfortably in memory while allowing larger sequential write bursts before flushing redo logs.
+3. **`skip_name_resolve`:** Eliminates reverse DNS lookups on incoming client/worker connections, preventing socket establishment delays during instant shock.
+4. **`binlog_format = ROW` & `gtid_strict_mode = OFF`:** Guarantees deterministic row-based replication across the HA cluster while preventing replication breaks on GTID sequence edge cases during failovers.
 
 ### 2. Application Server (Granian WSGI) Concurrency Tuning
 - **Original Configuration:** With `--workers 2`, the container was throttled by Python GIL constraints at ~2.17 CPU cores, yielding ~118 RPS with queued backlog drops under shock.

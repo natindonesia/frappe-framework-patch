@@ -2,6 +2,16 @@
 
 Reproducible performance suite to determine the exact **Requests Per Second (RPS) per CPU Core**, **CPU cost per request**, and **concurrency shock tolerance** for Frappe Framework on cloud-native Kubernetes infrastructure.
 
+> [!NOTE]
+> **Public Reading Note: Interpreting These Results**
+> - **Workload Authenticity (Login + CRUD):** The 235 RPS reported below is **NOT** a synthetic `ping` or static read cache hit. It is the aggregate throughput of an authentic **Interactive Login + Full Transactional CRUD** lifecycle:
+>   - **50.0% Database Writes** (`POST` ToDo + `PUT` ToDo + `DELETE` ToDo): 117.5 writes/sec
+>   - **33.3% Database Reads** (`GET` ToDo by ID + `GET` ToDo list query): 78.3 reads/sec
+>   - **16.7% Interactive Logins** (`POST /api/method/login`): 39.2 logins/sec
+>   - **Completed User Journeys:** Exactly **39.17 complete 6-step lifecycles per second** with **0.00% error rate**.
+> - **Storage Hardware Reality (SATA SSD RAID-1, NOT NVMe):** The database storage runs on commodity **2x 500 GB SATA SSDs (Samsung SSD 870, SATA 6Gbps) in Software RAID-1**, **NOT** PCIe NVMe. Despite commodity SATA storage, MariaDB maintained a **99.96% InnoDB buffer pool hit ratio** and consumed only **1.4 cores peak**, confirming that storage I/O and MariaDB are not the throttle. The bottleneck lies squarely in WSGI worker process concurrency (Python GIL).
+> - **Reproducibility:** All k6 workloads, CPU instrumentation scripts, and manifests in this repository are generic, self-contained, and parameterizable via CLI flags.
+
 ---
 
 ## 1. Workload Profiles
@@ -91,11 +101,39 @@ Benchmark progression tested against a single cold web pod with instant concurre
 - **Error Rate:** **0.00% clean pass** across all concurrency levels.
 - **Sub-Second p99 Envelope:** Sustained up to **65 concurrent VUs** ($p_{99} = 905.99\text{ ms}$).
 
+---
+
+## 4. Hardware Specifications & MariaDB Tuning
+
+To enable apples-to-apples comparison across different environments and platforms:
+
+### Bare Metal Host Specifications
+- **CPU:** AMD Ryzen 9 5950X (16 Cores, 32 Threads, 3.4 GHz base / up to 4.90 GHz boost, 64MB L3 Cache).
+- **RAM:** 128 GB DDR4 ECC RAM (3200 MHz).
+- **Storage Subsystem:** 2x 500 GB SATA SSDs (Samsung SSD 870, SATA 6Gbps) in Software RAID-1, mounted via local storage provisioner (**NOT** NVMe).
+- **Network / OS:** 1 Gbps / 10 Gbps Uplink, Ubuntu 24.04 LTS, Cilium CNI.
+- **Container Runtime:** CRI-O on Kubernetes v1.36.x.
+
+### Active MariaDB Database Tuning (`my.cnf`)
+```ini
+[mysqld]
+innodb_buffer_pool_size = 1G
+innodb_log_file_size = 256M
+innodb_flush_method = O_DIRECT
+innodb_io_capacity = 200
+max_connections = 200
+max_allowed_packet = 256M
+binlog_format = ROW
+gtid_strict_mode = OFF
+sync_binlog = 1
+skip_name_resolve
+```
+
 See [`FINDINGS.md`](./FINDINGS.md) for full architectural analysis and bottleneck breakdown.
 
 ---
 
-## 4. Methodology & Metric Calculations
+## 5. Methodology & Metric Calculations
 
 Continuous background monitoring (`monitor_cpu.py`) queries the raw Kubernetes metrics API (`/apis/metrics.k8s.io/v1beta1/namespaces/<ns>/pods`) every 2 seconds before, during, and after the test to obtain nanosecond CPU readings.
 
