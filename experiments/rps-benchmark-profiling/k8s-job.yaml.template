@@ -1,48 +1,33 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: fayolex-working-staging-benchmark-job
+  name: frappe-benchmark-job
   namespace: default
   labels:
-    app.kubernetes.io/name: fayolex-working-staging-benchmark
-    app.kubernetes.io/part-of: fayolex-working-staging
+    app.kubernetes.io/name: frappe-benchmark
+    app.kubernetes.io/part-of: frappe-bench
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 300
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: fayolex-working-staging-benchmark
+        app.kubernetes.io/name: frappe-benchmark
     spec:
       restartPolicy: Never
-      hostAliases:
-        - ip: "172.24.11.70"
-          hostnames:
-            - "demo.fayolex.co.id"
-            - "ananda.fayolex.co.id"
-      volumes:
-        - name: script-vol
-          configMap:
-            name: fayolex-working-staging-benchmark-config
-        - name: results-vol
-          emptyDir: {}
       containers:
         - name: k6-runner
           image: grafana/k6:latest
           imagePullPolicy: IfNotPresent
           command:
-            - "sh"
-            - "-c"
+            - /bin/sh
+            - -c
             - |
-              if [ -n "${SCENARIO}" ]; then
-                echo "[*] Launching k6 benchmark in k8s pod with Scenario=${SCENARIO}..."
-                k6 run --summary-export=/results/summary.json /scripts/k6-workload.js
-              else
-                echo "[*] Launching k6 benchmark in k8s pod with VUs=${TEST_VUS} Duration=${TEST_DURATION}..."
-                k6 run --vus "${TEST_VUS}" --duration "${TEST_DURATION}" --summary-export=/results/summary.json /scripts/k6-workload.js
-              fi
+              echo "[*] Launching k6 benchmark in k8s pod with Scenario=${SCENARIO:-custom}..."
+              k6 run /scripts/k6-workload.js \
+                --summary-export=/tmp/summary.json
               echo "===K6_SUMMARY_START==="
-              cat /results/summary.json
+              cat /tmp/summary.json
               echo "===K6_SUMMARY_END==="
           env:
             - name: TARGET_URL
@@ -61,19 +46,21 @@ spec:
               value: "${WORKLOAD_TYPE}"
             - name: SCENARIO
               value: "${SCENARIO}"
-            - name: TEST_VUS
+            - name: VUS
               value: "${TEST_VUS}"
-            - name: TEST_DURATION
+            - name: DURATION
               value: "${TEST_DURATION}"
           volumeMounts:
-            - name: script-vol
+            - name: test-scripts
               mountPath: /scripts
-            - name: results-vol
-              mountPath: /results
           resources:
             requests:
-              cpu: 500m
-              memory: 512Mi
+              cpu: 200m
+              memory: 256Mi
             limits:
-              cpu: "4"
-              memory: 2Gi
+              cpu: 2000m
+              memory: 1Gi
+      volumes:
+        - name: test-scripts
+          configMap:
+            name: frappe-benchmark-config

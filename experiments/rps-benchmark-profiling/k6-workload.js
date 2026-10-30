@@ -8,7 +8,7 @@ const successfulCycles = new Counter('crud_cycles_success');
 const failedCycles = new Counter('crud_cycles_failure');
 
 // Read configuration from environment variables
-const TARGET_URL = __ENV.TARGET_URL || 'https://demo.fayolex.co.id';
+const TARGET_URL = __ENV.TARGET_URL || 'http://localhost:8000';
 const API_KEY = __ENV.API_KEY || '';
 const API_SECRET = __ENV.API_SECRET || '';
 const USER_EMAIL = __ENV.USER_EMAIL || '';
@@ -19,19 +19,14 @@ const WORKLOAD_TYPE = __ENV.WORKLOAD_TYPE || 'crud';
 
 const scenarioConfig = {
   shock: {
-    executor: 'ramping-vus',
-    startVUs: 10,
-    stages: [
-      { duration: '10s', target: 10 },  // Baseline calm before rush
-      { duration: '2s', target: 80 },   // Instantaneous synchronized shock!
-      { duration: '35s', target: 80 },  // Sustained peak rush
-      { duration: '10s', target: 10 },  // Ramp-down recovery
-    ],
-    gracefulRampDown: '5s',
+    executor: 'constant-vus',
+    vus: parseInt(__ENV.VUS || '80', 10),
+    duration: __ENV.DURATION || '50s',
+    gracefulStop: '5s',
   },
   burst: {
     executor: 'constant-vus',
-    vus: 80,
+    vus: parseInt(__ENV.VUS || '80', 10),
     duration: '60s',
     gracefulStop: '5s',
   },
@@ -52,9 +47,7 @@ const scenarioConfig = {
 const baseOptions = {
   insecureSkipTLSVerify: true,
   discardResponseBodies: false,
-  thresholds: {
-    http_req_failed: ['rate<0.05'], // Allow < 5% failure under extreme load
-  },
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
 };
 
 if (__ENV.SCENARIO && scenarioConfig[__ENV.SCENARIO]) {

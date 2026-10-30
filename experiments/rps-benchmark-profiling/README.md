@@ -1,12 +1,12 @@
 # Frappe Framework Performance & RPS Profiling
 
-Reproducible performance experiment to determine the exact **Requests Per Second (RPS) per CPU Core** and **CPU cost per request** for Frappe Framework on modern infrastructure.
+Reproducible performance suite to determine the exact **Requests Per Second (RPS) per CPU Core**, **CPU cost per request**, and **concurrency shock tolerance** for Frappe Framework on cloud-native Kubernetes infrastructure.
 
 ---
 
-## 1. Overview & Workload Types
+## 1. Workload Profiles
 
-This profiling suite isolates Frappe Framework operations into distinct, reproducible test workloads:
+The profiling suite isolates Frappe operations into distinct, reproducible test workloads:
 
 1. **Pure Read (`--workload read`):**
    - Querying list endpoints (`GET /api/resource/ToDo?limit=10`).
@@ -20,50 +20,75 @@ This profiling suite isolates Frappe Framework operations into distinct, reprodu
 4. **80% Read / 20% Write Mix (`--workload mix8020`):**
    - Authentic mixed production distribution: 80% list reads, 10% document inserts, 10% document updates.
 5. **Full Lifecycle CRUD (`--workload crud`):**
-   - Sequential document lifecycle: Create $\to$ Read $\to$ Update $\to$ List $\to$ Delete.
+   - Sequential document lifecycle: Login $\to$ Create $\to$ Read $\to$ Update $\to$ List $\to$ Delete.
 
 ---
 
 ## 2. How to Run
 
-### Options & Flags
+### Command-Line Options
 ```bash
 ./run_experiment.sh [OPTIONS]
 
 Options:
-  --workload <read|write|update|mix8020|crud>  Workload profile (default: read)
-  --scenario <shock|burst|max>                 Preset load ramp profile
-  --vus <number>                               Concurrent virtual users (default: 10)
-  --duration <time>                            Benchmark duration e.g. 30s, 60s
-  --site <hostname>                            Frappe site name (default: demo.fayolex.co.id)
-  --mode <k8s|local>                           Run load generator inside cluster (default) or local
-```
-  --cleanup             Clean up benchmark user and leftover ToDos after test
+  --namespace <ns>      Target Kubernetes namespace (default: frappe-bench)
+  --site <hostname>     Frappe site hostname (default: frappe.local)
+  --target-url <url>    Target HTTP/HTTPS URL (default: https://<site>)
+  --mode <k8s|local>    Run load generator inside k8s (default) or locally
+  --workload <type>     Workload: 'read', 'write', 'update', 'mix8020', or 'crud' (default: crud)
+  --scenario <name>     Preset scenario: 'shock' (instant surge), 'burst', or 'max'
+  --vus <number>        Number of concurrent virtual users (default: 10)
+  --duration <time>     Test duration, e.g. 30s, 60s, 2m (default: 45s)
+  --login <true|false>  Include session authentication in each cycle (default: true)
+  --cold <true|false>   Scale web deployment to 1 cold replica before test (default: true)
+  --cleanup             Clean up benchmark users and test records after run
   --help                Show usage information
 ```
 
 ### Examples
 
-**Standard In-Cluster Run (10 concurrent users for 45s):**
+**Instant Concurrency Shock Test (50 VUs, instant rush, starting with 1 cold pod):**
 ```bash
-./run_experiment.sh --mode k8s --vus 10 --duration 45s
+./run_experiment.sh --namespace frappe-bench --site frappe.local --scenario shock --vus 50 --duration 30s
 ```
 
-**High Concurrency Test (25 concurrent users for 60s):**
+**Standard In-Cluster CRUD Test (20 concurrent users for 45s):**
 ```bash
-./run_experiment.sh --mode k8s --vus 25 --duration 60s
+./run_experiment.sh --namespace frappe-bench --site frappe.local --vus 20 --duration 45s
 ```
 
-**Run with Full Teardown / Cleanup:**
+**Local Testing with Host Network:**
 ```bash
-./run_experiment.sh --mode k8s --vus 5 --duration 30s --cleanup
+./run_experiment.sh --mode local --site frappe.local --target-url http://localhost:8000 --vus 10 --duration 30s
 ```
+
+---
+
+## 3. Shock Test Findings Summary (1 Cold Web Pod)
+
+Benchmark progression tested against a single cold web pod with instant concurrency and zero warm-up:
+
+| Concurrency (VUs) | Throughput (RPS) | Requests Processed | Error Rate (%) | Avg Latency (ms) | p90 (ms) | p95 (ms) | p99 (ms) | Web Peak CPU (cores) | MariaDB Peak CPU (cores) |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **20 VUs** | **208.85** | 10,518 | **0.00%** | **95.24** | 226.35 | 284.43 | **385.86** | 4.03 | 1.18 |
+| **35 VUs** | **232.29** | 11,712 | **0.00%** | **149.94** | 331.83 | 402.60 | **545.09** | 4.43 | 1.27 |
+| **50 VUs** | **235.00** | 11,904 | **0.00%** | **211.62** | 438.51 | 511.44 | **676.78** | 4.67 | 1.42 |
+| **65 VUs** | **234.70** | 11,916 | **0.00%** | **274.56** | 604.78 | 707.68 | **905.99** | 4.72 | 1.35 |
+| **80 VUs** | **223.99** | 11,442 | **0.00%** | **353.80** | 776.54 | 917.99 | **1,208.18** | 4.70 | 1.26 |
+| **100 VUs** | **225.10** | 11,472 | **0.00%** | **440.48** | 860.11 | 1,001.16 | **1,323.71** | 4.52 | 1.40 |
+| **120 VUs** | **230.75** | 11,826 | **0.00%** | **514.27** | 1,011.70 | 1,137.06 | **1,391.49** | 4.34 | 1.44 |
+
+- **Highest Clean RPS:** **235.00 RPS** at 50 VUs.
+- **Error Rate:** **0.00% clean pass** across all concurrency levels.
+- **Sub-Second p99 Envelope:** Sustained up to **65 concurrent VUs** ($p_{99} = 905.99\text{ ms}$).
+
+See [`FINDINGS.md`](./FINDINGS.md) for full architectural analysis and bottleneck breakdown.
 
 ---
 
 ## 4. Methodology & Metric Calculations
 
-Continuous background monitoring (`monitor_cpu.py`) queries the raw Kubernetes metrics API (`/apis/metrics.k8s.io/v1beta1/namespaces/fayolex-working-staging/pods`) every 2 seconds before, during, and after the test to obtain nanosecond CPU readings.
+Continuous background monitoring (`monitor_cpu.py`) queries the raw Kubernetes metrics API (`/apis/metrics.k8s.io/v1beta1/namespaces/<ns>/pods`) every 2 seconds before, during, and after the test to obtain nanosecond CPU readings.
 
 ### Metrics Computed:
 - **RPS (Requests Per Second):**
@@ -80,13 +105,3 @@ Continuous background monitoring (`monitor_cpu.py`) queries the raw Kubernetes m
 
 - **CPU Cost per Request:**
   $$\text{Cost per Request} = \frac{\Delta \text{CPU}_{\text{total}}}{\text{RPS}} \quad (\text{mCPU}\cdot\text{s per request})$$
-
----
-
-## 5. Artifacts and Output Files
-
-All experiment logs and JSON metrics are stored in `results/`:
-- `results/report_<timestamp>.json`: Comprehensive analyzed metrics report.
-- `results/cpu_samples_<timestamp>.json`: Time-series CPU and memory samples across all pods.
-- `results/k6_summary_<timestamp>.json`: Standard k6 raw metrics export.
-- `results/job_logs_<timestamp>.txt`: Full pod execution output.
