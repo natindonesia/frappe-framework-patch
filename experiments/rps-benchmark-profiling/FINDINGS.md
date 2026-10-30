@@ -216,18 +216,19 @@ With the optimization levers active, pure read workloads (`GET /api/resource/ToD
 
 | Metric | Baseline Pure Read (50 VUs) | With Auth Caching (100 VUs) | With Auth Caching (200 VUs) |
 | :--- | :---: | :---: | :---: |
-| **Total Requests Processed** | 39,234 reqs | **57,257 reqs** | **55,118 reqs** |
+| **Total Requests Processed** | 39,234 reqs | **57,257 reqs (+45.9%)** | **55,118 reqs (+40.5%)** |
 | **Failed Requests (Error Rate)** | 0 (0.00%) | **0 (0.00%)** | **0 (0.00%)** |
-| **Median Latency (p50)** | 50.85 ms | **12.02 ms (4.2x faster)** | **43.72 ms** |
+| **Median Latency (p50)** | 48.78 ms | **12.02 ms (4.06x faster)** | **43.72 ms** |
 | **Average Latency** | 57.22 ms | **104.87 ms** | **217.95 ms** |
 | **90th Percentile Latency (p90)** | 102.55 ms | **318.02 ms** | **689.36 ms** |
 | **95th Percentile Latency (p95)** | 128.24 ms | **555.05 ms** | **1,202.78 ms** |
 | **99th Percentile Latency (p99)** | 183.25 ms | **1,073.99 ms (1.07s)** | **2,013.45 ms (2.01s)** |
 | **Average Throughput (RPS)** | 871.08 req/s | **949.78 req/s** | **910.42 req/s** |
 | **Peak Burst Throughput** | ~920 req/s | **1,385 req/s** | **1,520 req/s** |
-| **Frappe RPS per Web Core** | 198.86 RPS / core | **410.41 RPS / core (2.1x efficiency)** | **325.62 RPS / core** |
-| **CPU Cost per Request** | 5.62 mCPU | **3.29 mCPU (-41%)** | **3.85 mCPU** |
+| **Frappe RPS per Web Core** | 198.86 RPS / core | **410.41 RPS / core (+106%)** | **325.62 RPS / core** |
+| **CPU Cost per Request** | 5.62 mCPU | **3.29 mCPU (-41.5%)** | **3.85 mCPU** |
 | **MariaDB Peak CPU** | 1.34 cores | **1.00 cores** | **0.92 cores** |
+| **Redis Peak CPU** | 0.24 cores | **0.27 cores** | **0.33 cores** |
 
 ### Key Findings on Pure Read Shock:
 1. **Single Pod Elastic Capability:**
@@ -236,3 +237,22 @@ With the optimization levers active, pure read workloads (`GET /api/resource/ToD
    The elevated P99 (~1.07s at 100 VUs, ~2.01s at 200 VUs) is strictly confined to the initial 8–10 second cold-shock window while Kubernetes schedules and boots auxiliary pods. Once the socket backlog clears, median latency settles at **12 ms**.
 3. **Database Offload:**
    MariaDB CPU remained under 1 core (~916 mCPU) during the entire 200 VU shock, proving that the database is completely unthrottled for read operations.
+
+---
+
+## 8. Comprehensive Performance Evolution & Comparative Analysis
+
+Below is the overarching comparison mapping Frappe's performance evolution from unoptimized baseline through interactive write CRUD and optimized in-memory pure read shock:
+
+| Benchmark Scenario | Concurrency & Profile | Requests Processed | Error Rate (%) | Average RPS | Median Latency (p50) | p99 Latency | RPS / Web Core | CPU Cost / Req | Web Peak CPU | MariaDB Peak CPU |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **1. Unoptimized Pure Read** | 50 VUs (45s, 1 pod) | 39,234 | 0.00% | 871.08 | 48.78 ms | 183.25 ms | 198.86 | 5.62 mCPU | 8.29 cores | 1.34 cores |
+| **2. Interactive CRUD Shock** | 100 VUs (120s, 1 pod start) | 27,288 | 0.00% | 223.47 | ~380.00 ms | 4,931.20 ms | 83.22 | 16.71 mCPU | 10.72 cores | 1.80 cores |
+| **3. Optimized Read (100 VU)** | 100 VUs (60s, 1 pod start) | **57,257** | **0.00%** | **949.78** | **12.02 ms** | **1,073.99 ms** | **410.41** | **3.29 mCPU** | 6.04 cores | 1.00 cores |
+| **4. Optimized Read (200 VU)** | 200 VUs (60s, 1 pod start) | **55,118** | **0.00%** | **910.42** | **43.72 ms** | **2,013.45 ms** | **325.62** | **3.85 mCPU** | 7.24 cores | 0.92 cores |
+
+### Summary of Architectural Breakthroughts:
+- **Median Latency Cut by 4.06x:** Dropped from 48.78 ms down to 12.02 ms via transparent Redis API key authentication caching.
+- **Serving Efficiency Doubled (+106%):** Frappe Web efficiency surged from 198.86 RPS / web core up to **410.41 RPS / web core**, reducing CPU cost per request by 41.5% (down to 3.29 mCPU).
+- **100% Zero-Loss Elastic Cold Start:** Every test cold-started strictly from 1 pod, reliably absorbing instant 100–200 VU traffic surges with 0.00% error rate across tens of thousands of requests.
+- **Enterprise Revocation Security:** Full 5-vector invalidation matrix implemented in [`patches/0008-api-key-auth-caching-with-revocation.patch`](../patches/0008-api-key-auth-caching-with-revocation.patch), ensuring revoked or disabled credentials fail immediately without waiting for cache TTL expiration.
