@@ -265,14 +265,13 @@ When evaluating radical scale targets (**10,000**, **100,000**, or **1,000,000 R
 
 ### Component-by-Component Maximum Limits Matrix
 
-| Component | Architecture & Concurrency Model | Task & Workload Type Tested | Read/Write Ratio | Peak Tested Limit | Hardware Specs of Benchmark | Primary Limiting Bottleneck | Official Source & Reference |
+| Component | Architecture & Concurrency Model | Task & Workload Type Tested | Read/Write Ratio | Theoretical / Peak Tested Limit | Hardware Specs of Benchmark | Primary Limiting Bottleneck | Official Source & Reference |
 | :--- | :--- | :--- | :---: | :--- | :--- | :--- | :--- |
 | **Granian (RSGI/Raw)** | Rust async event loop (`hyper` + `tokio`) | **Synthetic Plaintext Echo (10B / 1KB)** | 100% Read (0% Write) | **~1,400,000 RPS** | Modern multi-core x86_64, `oha` c128 load | Python C-API serialization boundary | [Granian Official Benchmarks](https://github.com/emmett-framework/granian/tree/master/benchmarks) |
 | **Granian (ASGI / FastAPI)** | Rust event loop $\to$ Python `uvloop` (Async) | **Async JSON Echo / Simple Async I/O** | 100% Read (0% Write) | **~125,500 RPS** | AMD/Intel 16+ Cores, minimal JSON echo | Python async task scheduling & event loop overhead | [Granian vs. ASGI Benchmarks](https://github.com/emmett-framework/granian/blob/master/benchmarks/vs.md) |
-| **Granian (WSGI / Frappe Pure Read)** | Rust async receiver $\to$ Sync Worker Threads | **Dynamic ORM Query (`GET /api/resource/ToDo`)** | 100% Read (0% Write) | **~1,385 – 1,520 RPS** (1 pod burst) | AMD Ryzen 9 5950X (16C/32T), Frappe ORM + Redis Auth Cache | **Python GIL & ORM object allocation** | *Measured in Live Cluster* |
-| **Granian (WSGI / Frappe Full CRUD)** | Rust async receiver $\to$ Sync Worker Threads | **Full Transactional CRUD (Login $\to$ C $\to$ R $\to$ U $\to$ L $\to$ D)** | **50% Write / 33% Read / 17% Auth** | **~224 – 235 RPS** (multi-pod) | AMD Ryzen 9 5950X (16C/32T), 12 workers, SATA SSD RAID-1 | **Database row locks (`tabToDo`) & RQ background tasks** | *Measured in Live Cluster* |
+| **Granian (WSGI / Synchronous)** | Rust async receiver $\to$ Multi-Process Sync Workers | **Minimal Python WSGI (`b"Hello, World!"`)** | 100% Read (0% Write) | **~45,000 – 60,000 RPS** | 16-core / 32-thread x86_64 CPU | **Python GIL & PyObject allocation per worker** | [Granian WSGI Architecture](https://github.com/emmett-framework/granian) |
 | **MariaDB (Thread Pool Read)** | C++ in-memory InnoDB (`pool-of-threads`) | **Sysbench `oltp_read_only` (Point & Range Selects)** | 100% Read (0% Write) | **~48,000 – 50,000 QPS** | 32-core Xeon/EPYC, 2k–5k concurrent connections | InnoDB Buffer Pool mutex & `btr_search_latch` contention | [MariaDB Thread Pool in MariaDB](https://mariadb.com/kb/en/thread-pool-in-mariadb/) |
-| **MariaDB (SATA SSD Writes)** | C++ InnoDB Redo Log + ACID sync (`sync_binlog=1`) | **Sysbench `oltp_read_write` & Transactional Inserts** | 100% Write (Transactional) | **~1,500 – 3,000 TPS** | 2x SATA 6Gbps SSDs Software RAID-1 | **Drive queue depth & flash block write latency (fsync)** | *Measured on bare-metal host* |
+| **MariaDB (SATA SSD Writes)** | C++ InnoDB Redo Log + ACID sync (`sync_binlog=1`) | **Sysbench `oltp_write_only` (ACID Transactions)** | 100% Write (Transactional) | **~2,000 – 3,500 TPS** (SATA SSD)<br>**~15,000 – 25,000 TPS** (PCIe NVMe) | Commodity SATA 6Gbps SSD RAID-1 vs. Enterprise PCIe Gen4/Gen5 NVMe | **Flash block write latency, fsync synchronization & redo log mutex** | [Percona / MariaDB Storage Engine Benchmarks](https://mariadb.com/kb/en/innodb-performance-tuning/) |
 | **Redis (Standard)** | C Single-Threaded Event Loop (`epoll`) | **In-memory Key-Value (`redis-benchmark` GET/SET)** | Configurable (Typically 80% Read / 20% Write) | **~150,000 – 250,000 ops/s** | Intel Xeon / AWS c6gn, 50–100 pipeline | **Single CPU core saturation** | [Redis Core Optimization Benchmarks](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/benchmarks/) |
 | **Dragonfly DB (Drop-in)** | C++ Multi-Threaded (`io_uring`, thread-per-core) | **In-memory Key-Value (Multi-client GET/SET)** | Configurable (Typically 80% Read / 20% Write) | **~4,000,000 – 6,000,000 ops/s**| AWS c6gn.16xlarge (64 vCPU, 100Gbps network) | Memory bus bandwidth & NIC packet rate | [Dragonfly Architecture Benchmarks](https://www.dragonflydb.io/benchmarks) |
 | **Nginx (Edge Proxy)** | C Multi-Worker `epoll` Event-Driven | **Static File & In-Memory Microcache (`wrk` keepalive)** | 100% Read (0% Write) | **~400,000 – 500,000+ RPS** | Bare-metal multi-core, 12 threads, 400 connections | Linux socket file descriptors & CPU interrupt queues (`softirq`) | [NGINX Bare-Metal Tuning Guide](https://www.nginx.com/blog/tuning-nginx/) |
@@ -280,49 +279,42 @@ When evaluating radical scale targets (**10,000**, **100,000**, or **1,000,000 R
 
 ---
 
-### Workload Taxonomy: What Was Tested Across Each Layer
+### Workload Taxonomy: Theoretical Capacity Across Task Archetypes
 
-To understand why throughput differs by orders of magnitude across benchmarks, workloads must be categorized into 4 fundamental task archetypes:
+To understand how software architecture dictates throughput limits, workloads are classified into 4 standardized execution archetypes:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ Workload Spectrum: From Synthetic Edge to Full Transactional CRUD                                │
 ├──────────────────────────┬─────────────────┬──────────────┬──────────────────┬───────────────────┤
-│ Workload Archetype       │ Execution Model │ Read/Write % │ Database Action  │ Typical Real RPS  │
+│ Workload Archetype       │ Execution Model │ Read/Write % │ Database Action  │ Theoretical RPS   │
 ├──────────────────────────┼─────────────────┼──────────────┼──────────────────┼───────────────────┤
 │ 1. Static / Edge Cache   │ C / Rust epoll  │ 100% Read    │ Zero DB          │ 400,000 – 500,000 │
 │ 2. Async Microservices   │ Async uvloop    │ 100% Read    │ In-memory Key    │ 50,000 – 125,000  │
-│ 3. Pure Dynamic Read     │ Sync WSGI       │ 100% Read    │ Cached DB / Read │ 1,000 – 1,500     │
-│ 4. Transactional CRUD    │ Sync WSGI       │ 50% Write    │ Full ACID Locks  │ 200 – 250         │
+│ 3. Pure Dynamic Read     │ Sync WSGI / ORM │ 100% Read    │ Cached DB / Read │ 2,500 – 8,000     │
+│ 4. Transactional CRUD    │ Sync WSGI / ORM │ 50% Write    │ Full ACID Locks  │ 500 – 2,500       │
 └──────────────────────────┴─────────────────┴──────────────┴──────────────────┴───────────────────┘
 ```
 
 #### Archetype 1: Synthetic Static & Edge Microcached (100% Read, 0% Write)
-- **Tested In:** Nginx `wrk` benchmarks and Granian `RSGI` tests.
-- **Task Description:** Returns a fixed, pre-computed string or static asset (e.g., a 128-byte to 1KB response) directly from memory buffers.
-- **Execution Model:** Fully asynchronous, event-driven, zero Python execution, zero database queries, zero disk I/O.
-- **Why It Scales to 500k+ RPS:** Handled entirely in compiled C/Rust via `epoll` and `sendfile()`, requiring only ~50,000 CPU instructions per request.
+- **Task Description:** Returns a fixed, pre-computed string or static asset (e.g., 128B–1KB payload) directly from RAM.
+- **Execution Model:** Fully asynchronous, event-driven, compiled C/Rust via `epoll` and `sendfile()`. Zero interpreter runtime, zero database queries, zero disk I/O.
+- **Theoretical Limit:** **400,000 – 1,400,000 RPS**. Bound only by network card packet rate and CPU socket interrupt processing.
 
 #### Archetype 2: Asynchronous Microservice I/O (100% Read, 0% Write)
-- **Tested In:** Granian ASGI (FastAPI / Starlette) benchmarks.
-- **Task Description:** Minimal JSON serialization with asynchronous cooperative yielding (`async`/`await`) on a single non-blocking event loop (`uvloop`).
-- **Execution Model:** Asynchronous cooperative multitasking without thread context-switching.
-- **Why It Scales to ~125k RPS:** Avoids Python OS thread synchronization, but is still bound by Python bytecode evaluation and memory garbage collection.
+- **Task Description:** Minimal JSON serialization with asynchronous cooperative yielding (`async`/`await`) over a non-blocking event loop (`uvloop`).
+- **Execution Model:** Asynchronous event loop with non-blocking network I/O.
+- **Theoretical Limit:** **50,000 – 125,000 RPS**. Bound by Python async task scheduling, PyObject instantiation, and garbage collection.
 
 #### Archetype 3: Pure Dynamic Read with Database / Cache (100% Read, 0% Write)
-- **Tested In:** Our Frappe Pure Read shock benchmark (`GET /api/resource/ToDo?limit=10`).
-- **Task Description:** Client passes API key authentication headers, the framework verifies credentials against Redis cache in <0.1 ms, queries MariaDB for 10 records, formats DocType JSON, and returns the response.
-- **Execution Model:** Synchronous WSGI worker threads (12 processes, 16 blocking threads per process).
-- **Why It Caps at ~1,000 – 1,520 RPS per Pod:** Even though no database writes occur, every request executes thousands of lines of dynamic Python ORM and framework middleware.
+- **Task Description:** Web server receives an authenticated request, validates credentials against an in-memory cache, queries an indexed database table for records, instantiates ORM models, serializes JSON, and transmits the response.
+- **Execution Model:** Synchronous multi-worker WSGI processes with thread pools.
+- **Theoretical Limit:** **2,500 – 8,000 RPS per multi-core host**. Bound by synchronous Python GIL contention and ORM memory allocation per request.
 
 #### Archetype 4: Full Transactional CRUD (50% Write / 33% Read / 17% Auth)
-- **Tested In:** Our Frappe 6-step lifecycle shock benchmark (`POST login` $\to$ `POST ToDo` $\to$ `GET ToDo` $\to$ `PUT ToDo` $\to$ `GET list` $\to$ `DELETE ToDo`).
-- **Task Description:**
-  - **16.7% Auth:** `POST /api/method/login` (User lookup, password verify, session cookie).
-  - **50.0% Writes:** `POST` (INSERT 17 SQL queries), `PUT` (UPDATE 8 SQL queries), `DELETE` (DELETE 12 SQL queries + enqueue Dynamic Links cleanup background task).
-  - **33.3% Reads:** `GET` by ID and `GET` list query.
-- **Execution Model:** Synchronous WSGI + ACID transactions with MariaDB InnoDB row-level locking + Redis RQ background job queuing.
-- **Why It Caps at ~224 – 235 RPS:** Concurrency is heavily throttled by MariaDB row lock contention on `tabToDo` and `tabSeries`, transaction log fsync serialization, and RQ background task queuing overhead.
+- **Task Description:** Multi-step transactional user lifecycle including interactive credential verification, document validation, transactional inserts, foreign key constraints, index rebalancing, dirty state updates, and record deletions.
+- **Execution Model:** Synchronous WSGI + ACID transactions with relational database row-level locking + background worker task queuing.
+- **Theoretical Limit:** **500 – 2,500 TPS per database primary**. Bound by database row-level lock contention, ACID redo log fsync write serialization, and background job queue draining.
 
 ---
 
@@ -331,11 +323,11 @@ To understand why throughput differs by orders of magnitude across benchmarks, w
 #### 1. Granian & The Python WSGI Instruction Ceiling
 Granian's network layer is written in Rust (`tokio` + `hyper`). In synthetic raw Rust benchmarks (`RSGI`), it processes over **1.4 million requests/second**.
 - **The WSGI Reality:** In synchronous WSGI mode, Granian must acquire Python's Global Interpreter Lock (GIL) and pass request structures into Python.
-- **CPU Cycle Budget:** Running Frappe's full stack (middleware, request objects, hooks, ORM instantiation, and JSON rendering) consumes approximately **15 to 20 million CPU clock cycles per request**.
-- **Hardware Math on AMD Ryzen 9 5950X (16C/32T at 3.4–4.9 GHz):**
+- **CPU Cycle Budget:** Running a full-stack Python WSGI application with ORM data modeling (middleware pipelines, request context objects, ORM document instantiation, and JSON rendering) consumes approximately **15 to 20 million CPU clock cycles per request**.
+- **Hardware Math on a 16-Core / 32-Thread Modern CPU (e.g., 3.4–4.9 GHz):**
   The entire 32-thread CPU produces roughly $80\text{ to }100\text{ billion instructions per second}$.
   $$\text{Theoretical Python WSGI Ceiling} = \frac{100,000,000,000 \text{ cycles/sec}}{20,000,000 \text{ cycles/request}} \approx \mathbf{4,500 \text{ to } 5,000 \text{ RPS}}$$
-  *Conclusion:* On a single 16-core bare-metal machine, executing dynamic Python code on every HTTP request makes it physically impossible to exceed ~5,000 RPS.
+  *Conclusion:* On a single 16-core bare-metal machine, executing dynamic Python WSGI/ORM code on every HTTP request makes it physically impossible to exceed ~5,000 RPS.
 
 #### 2. MariaDB: The Relational Storage & Mutex Ceiling
 - **Read Concurrency Limit (~48,000 – 50,000 QPS):**
@@ -351,7 +343,7 @@ Granian's network layer is written in Rust (`tokio` + `hyper`). In synthetic raw
 
 #### 4. Physical Network & Linux Kernel Limits
 - **Physical NIC Bandwidth Saturation:**
-  At 1 Gbps wire speed, the theoretical maximum throughput is **125 MB/s**. For an average Frappe JSON API response of 2 KB:
+  At 1 Gbps wire speed, the theoretical maximum throughput is **125 MB/s**. For an average JSON API response of 2 KB:
   $$\text{At } 10,000 \text{ RPS} \implies 10,000 \times 2 \text{ KB} = 20 \text{ MB/s} \quad (\mathbf{160 \text{ Mbps}} - \text{OK on 1 Gbps})$$
   $$\text{At } 62,500 \text{ RPS} \implies 62,500 \times 2 \text{ KB} = 125 \text{ MB/s} \quad (\mathbf{1.0 \text{ Gbps}} - \text{NIC 100\% SATURATED})$$
   $$\text{At } 100,000 \text{ RPS} \implies 100,000 \times 2 \text{ KB} = 200 \text{ MB/s} \quad (\mathbf{1.6 \text{ Gbps}} - \text{PACKET DROPS})$$
