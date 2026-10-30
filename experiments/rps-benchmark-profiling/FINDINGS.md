@@ -256,3 +256,80 @@ Below is the overarching comparison mapping Frappe's performance evolution from 
 - **Serving Efficiency Doubled (+106%):** Frappe Web efficiency surged from 198.86 RPS / web core up to **410.41 RPS / web core**, reducing CPU cost per request by 41.5% (down to 3.29 mCPU).
 - **100% Zero-Loss Elastic Cold Start:** Every test cold-started strictly from 1 pod, reliably absorbing instant 100–200 VU traffic surges with 0.00% error rate across tens of thousands of requests.
 - **Enterprise Revocation Security:** Full 5-vector invalidation matrix implemented in [`patches/0008-api-key-auth-caching-with-revocation.patch`](../patches/0008-api-key-auth-caching-with-revocation.patch), ensuring revoked or disabled credentials fail immediately without waiting for cache TTL expiration.
+
+---
+
+## 9. Theoretical & Physical Scaling Limits by Architecture Tier (1k to 1M RPS)
+
+When evaluating radical scale targets (**10,000**, **100,000**, or **1,000,000 RPS**), software applications are bounded by physical systems engineering: CPU instruction budgets, memory bus bandwidth, network interface card (NIC) serialization, and kernel socket queues.
+
+### Component-by-Component Maximum Limits Matrix
+
+| Component | Architecture Model | Peak Tested Limit | Hardware Specs of Benchmark | Primary Limiting Bottleneck | Official Source & Reference |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Granian (RSGI/Raw)** | Rust (`hyper` + `tokio`) | **~1,400,000 RPS** | Modern multi-core x86_64, `oha` c128 load | Python C-API serialization boundary | [Granian Official Benchmarks](https://github.com/emmett-framework/granian/tree/master/benchmarks) |
+| **Granian (ASGI / FastAPI)** | Rust event loop $\to$ `uvloop` | **~125,500 RPS** | AMD/Intel 16+ Cores, minimal JSON echo | Python async task scheduling | [Granian vs. ASGI Benchmarks](https://github.com/emmett-framework/granian/blob/master/benchmarks/vs.md) |
+| **Granian (WSGI / Frappe)** | Rust $\to$ Python C-GIL threads | **~1,500 – 4,500 RPS** | AMD Ryzen 9 5950X (16C/32T), Frappe ORM | **Python GIL & ORM object allocation** | *Measured in Live Cluster* |
+| **MariaDB (Thread Pool)** | C++ in-memory InnoDB (`pool-of-threads`) | **~48,000 – 50,000 QPS** | 32-core Xeon/EPYC, Sysbench `oltp_read_only` (2k–5k connections) | InnoDB Buffer Pool mutex & latch contention | [MariaDB Thread Pool in MariaDB](https://mariadb.com/kb/en/thread-pool-in-mariadb/) |
+| **MariaDB (SATA SSD Writes)** | InnoDB Redo Log + ACID sync | **~1,500 – 3,000 TPS** | 2x SATA 6Gbps SSDs Software RAID-1 | **Drive queue depth & flash block write latency (fsync)** | *Measured on bare-metal host* |
+| **Redis (Standard)** | C Single-Threaded Core | **~150,000 – 250,000 ops/s** | Intel Xeon / AWS c6gn, `redis-benchmark` | **Single CPU core saturation** | [Redis Core Optimization Benchmarks](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/benchmarks/) |
+| **Dragonfly DB (Drop-in)** | C++ Thread-per-core (`io_uring`) | **~4,000,000 – 6,000,000 ops/s**| AWS c6gn.16xlarge (64 vCPU, 100Gbps network) | Memory bus bandwidth & NIC packet rate | [Dragonfly Architecture Benchmarks](https://www.dragonflydb.io/benchmarks) |
+| **Nginx (Edge Proxy)** | C `epoll` Event-Driven | **~400,000 – 500,000+ RPS** | Bare-metal multi-core, `wrk` keepalive, tiny payload | Linux socket file descriptors & CPU interrupt queues (`softirq`) | [NGINX Bare-Metal Tuning Guide](https://www.nginx.com/blog/tuning-nginx/) |
+| **Physical 1 Gbps NIC** | Gigabit Ethernet PHY | **~60,000 – 80,000 RPS** | Standard 1 Gbps port (at 1.5–2 KB HTTP response) | **Physical wire bandwidth: 125 MB/s** | *IEEE 802.3 Ethernet Standard* |
+
+---
+
+### Detailed Component Analysis & Hardware Bottlenecks
+
+#### 1. Granian & The Python WSGI Instruction Ceiling
+Granian's network layer is written in Rust (`tokio` + `hyper`). In synthetic raw Rust benchmarks (`RSGI`), it processes over **1.4 million requests/second**.
+- **The WSGI Reality:** In synchronous WSGI mode, Granian must acquire Python's Global Interpreter Lock (GIL) and pass request structures into Python.
+- **CPU Cycle Budget:** Running Frappe's full stack (middleware, request objects, hooks, ORM instantiation, and JSON rendering) consumes approximately **15 to 20 million CPU clock cycles per request**.
+- **Hardware Math on AMD Ryzen 9 5950X (16C/32T at 3.4–4.9 GHz):**
+  The entire 32-thread CPU produces roughly $80\text{ to }100\text{ billion instructions per second}$.
+  $$\text{Theoretical Python WSGI Ceiling} = \frac{100,000,000,000 \text{ cycles/sec}}{20,000,000 \text{ cycles/request}} \approx \mathbf{4,500 \text{ to } 5,000 \text{ RPS}}$$
+  *Conclusion:* On a single 16-core bare-metal machine, executing dynamic Python code on every HTTP request makes it physically impossible to exceed ~5,000 RPS.
+
+#### 2. MariaDB: The Relational Storage & Mutex Ceiling
+- **Read Concurrency Limit (~48,000 – 50,000 QPS):**
+  Under MariaDB's `thread_handling = pool-of-threads`, Sysbench benchmarks demonstrate that query throughput flattens at ~50,000 QPS across 2,000 to 10,000 connections. Beyond this, throughput is bounded not by CPU or disk, but by internal InnoDB synchronization primitives (`btr_search_latch`, buffer pool mutexes, and index page read/write locks).
+- **Write Durability Limit (~1,500 – 3,000 TPS):**
+  On commodity SATA 6Gbps SSDs (Software RAID-1), random write 4KB IOPS caps out around 40,000 to 80,000 IOPS. With transactional ACID redo log flushes (`fsync`), a single primary MariaDB instance hits a hard wall at 1,500 to 3,000 transactional writes/second. Any architecture exceeding 10,000 RPS must decouple transactional database writes from reads.
+
+#### 3. Redis vs. Dragonfly: The In-Memory Cache Limit
+- **Standard Redis (~150,000 – 250,000 ops/s):**
+  Standard Redis executes commands on a single CPU core to guarantee lock-free atomicity. A single core saturates around 150k–200k ops/sec. At 100,000 dynamic HTTP requests/sec (with 1–2 cache lookups each), a single Redis instance hits 100% CPU on that core.
+- **Dragonfly DB (~4,000,000 – 6,000,000 ops/s):**
+  Dragonfly implements a shared-nothing, thread-per-core architecture utilizing Linux `io_uring`. Benchmarks on 64-core instances demonstrate over 4 million QPS with sub-millisecond p99 latency, serving as a multi-threaded drop-in replacement for Redis at extreme concurrency.
+
+#### 4. Physical Network & Linux Kernel Limits
+- **Physical NIC Bandwidth Saturation:**
+  At 1 Gbps wire speed, the theoretical maximum throughput is **125 MB/s**. For an average Frappe JSON API response of 2 KB:
+  $$\text{At } 10,000 \text{ RPS} \implies 10,000 \times 2 \text{ KB} = 20 \text{ MB/s} \quad (\mathbf{160 \text{ Mbps}} - \text{OK on 1 Gbps})$$
+  $$\text{At } 62,500 \text{ RPS} \implies 62,500 \times 2 \text{ KB} = 125 \text{ MB/s} \quad (\mathbf{1.0 \text{ Gbps}} - \text{NIC 100\% SATURATED})$$
+  $$\text{At } 100,000 \text{ RPS} \implies 100,000 \times 2 \text{ KB} = 200 \text{ MB/s} \quad (\mathbf{1.6 \text{ Gbps}} - \text{PACKET DROPS})$$
+  $$\text{At } 1,000,000 \text{ RPS} \implies 1,000,000 \times 2 \text{ KB} = 2 \text{ GB/s} \quad (\mathbf{16 \text{ Gbps}} - \text{Requires 25/40 Gbps NIC})$$
+- **Linux Kernel Network Stack:**
+  At 100,000 new TCP connections/second, Linux packet-processing interrupt routines (`ksoftirqd`) burn 3 to 4 CPU cores purely in the network driver before user-space processes receive data. Additionally, the kernel `conntrack` table will drop packets unless tuned (`net.netfilter.nf_conntrack_max > 1048576`).
+
+---
+
+### Architectural Blueprint by Scaling Magnitude
+
+```
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│ System Architecture Progression                                                   │
+├────────────────────┬──────────────────────────────────────────────────────────────┤
+│ 1k – 4k RPS        │ Dynamic Frappe Python WSGI + MariaDB Thread Pool + Redis     │
+│ (Current Tier)     │ (All application code executes dynamically on bare metal)    │
+├────────────────────┼──────────────────────────────────────────────────────────────┤
+│ 10k – 50k RPS      │ Nginx In-Memory Microcaching on Edge Proxy                   │
+│                    │ (0% Python on reads; Nginx serves cached JSON from RAM)      │
+├────────────────────┼──────────────────────────────────────────────────────────────┤
+│ 100k RPS           │ Decoupled CQRS Architecture + Dragonfly DB / Redis Cluster   │
+│                    │ (Frappe = Write Control Plane; In-memory C++ = Read Plane)   │
+├────────────────────┼──────────────────────────────────────────────────────────────┤
+│ 1,000,000 RPS      │ Anycast Global Edge CDN + Headless Frappe + Kernel-Bypass    │
+│                    │ (Global edge absorbs 99.5% of requests; origin sees <5k RPS) │
+└────────────────────┴──────────────────────────────────────────────────────────────┘
+```
