@@ -252,7 +252,8 @@ Use `docker compose down -v` only when deliberately destroying the MariaDB and F
 - `resources/otel-collector-config.yaml` — local receiver, batch processor, debug exporter, and central OTLP exporter.
 - `resources/nginx-entrypoint.sh` — nginx OTel module loading and gRPC exporter injection.
 - `runtime/otel.py` — lazy SDK boot, sampling, SQL spans, and background-job spans.
-- `runtime/otel_wsgi.py` — WSGI middleware setup.
+- `runtime/otel_wsgi.py` — WSGI middleware setup, wall-time profiler, and trace correlation.
+- `docs/wall-time-profiling.md` — wall-time profiling, latency distribution percentiles, and OTel trace correlation.
 - `resources/gunicorn-otel-conf.py` — worker boot hook.
 - `scripts/ci/compose-otel-spans.sh` — cold-start trace continuity assertion.
 - `scripts/ci/compose-gate-off.sh` — gate-off assertion using span start times.

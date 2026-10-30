@@ -144,6 +144,7 @@ No asset manifest is involved: bundle filenames are unhashed (see
 | `FRAPPE_DISABLE_OTEL` | any | *(unset)* | Force-disable tracing even when the endpoint is set. |
 | `OTEL_SERVICE_NAME` | traced roles | role-specific | Span service name. |
 | `OTEL_PYINSTRUMENT`, `OTEL_PYINSTRUMENT_INTERVAL`, `OTEL_PYINSTRUMENT_RSS_INTERVAL` | web | *(empty = off)* | Per-request pyinstrument profiling on HTTP spans. |
+| `ENABLE_WALL_PROFILING`, `WALL_PROFILING_DIR`, `WALL_PROFILING_IGNORE` | web | *(empty = off)* | Deterministic wall-time WSGI profiling, percentile distribution analysis, and OTel trace correlation. See [Wall-Time Profiling](docs/wall-time-profiling.md). |
 | `NGINX_OTEL_ENDPOINT` | nginx | *(derived)* | Scheme-less `host:port` for OTLP/gRPC (`:4317`); nginx's otel module rejects `http://` prefixes. |
 | `BACKEND`, `SOCKETIO` | nginx | `web:8000`, `socketio:9000` | Upstream addresses. |
 | `FRAPPE_SITE_NAME_HEADER` | nginx | `$SITE_NAME` | Site the nginx leg routes to. |
