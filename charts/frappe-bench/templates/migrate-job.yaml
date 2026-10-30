@@ -79,6 +79,13 @@ spec:
               fi
               {{- end }}
 
+              {{- if .Values.commonSiteConfig }}
+              echo "Applying common_site_config settings..."
+              {{- range $k, $v := .Values.commonSiteConfig }}
+              bench set-config -g --parse {{ $k }} {{ $v | quote }}
+              {{- end }}
+              {{- end }}
+
               echo "Starting bench migrate for all sites..."
               bench --site all migrate
               echo "Bench migrate completed successfully."

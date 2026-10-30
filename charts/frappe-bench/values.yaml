@@ -196,6 +196,10 @@ mariadb:
     storageSize: 10Gi
     storageClassName: ssd-hiiops-retain
 
+# Global common_site_config.json configuration applied during migrate job
+commonSiteConfig:
+  max_queued_jobs: 10000
+
 # Pre-sync release migration Job
 migrateJob:
   enabled: true
