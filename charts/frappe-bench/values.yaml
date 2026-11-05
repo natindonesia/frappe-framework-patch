@@ -223,6 +223,11 @@ migrateJob:
   waitImage: busybox:1.36
   setupAssetsDir: true
   fixDbUsers: true
+  # Validate every site_config.json encryption_key (44-char url-safe base64 of 32
+  # bytes) before `bench migrate`. Fails the sync hook on a malformed key, which
+  # otherwise only shows up at runtime as "Encryption key is in invalid format".
+  # Missing keys are reported as warnings, never fatal.
+  validateEncryptionKeys: true
   backoffLimit: 0
 
 # Scheduled S3/Spaces backup CronJob

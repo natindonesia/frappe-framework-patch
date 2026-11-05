@@ -191,6 +191,29 @@ Cilium egress policy is an allow-list for every endpoint it selects, so a
 wildcard `endpointSelector` replaces kube-dns' own egress and breaks DNS
 cluster-wide.
 
+### Site encryption keys (`migrateJob.validateEncryptionKeys`)
+
+Frappe stores a per-site Fernet key in `sites/<site>/site_config.json`. A key
+that is not 44-char url-safe base64 (32 decoded bytes) makes every encrypted
+read/write fail at runtime with `Encryption key is in invalid format` — long
+after the chart has reported a healthy sync.
+
+The pre-sync `migrate` Job therefore validates every site config before running
+`bench --site all migrate`, naming the offending site and aborting the hook:
+
+```yaml
+migrateJob:
+  validateEncryptionKeys: true # default
+```
+
+- Malformed key (wrong length, not base64, wrong decoded length) → Job fails, sync blocked.
+- Missing key → warning only; `bench new-site` generates one for fresh sites.
+
+This is the shared layer: every namespace that installs the chart gets the check,
+including ones whose site configs are seeded outside Helm (gitops hooks, sealed
+secrets). Set it to `false` only if you need a sync to proceed with a known-bad
+site for a repair.
+
 ---
 
 ## License
