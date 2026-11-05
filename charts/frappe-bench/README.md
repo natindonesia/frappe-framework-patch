@@ -165,6 +165,32 @@ also copied to `sites/hourly/` on every run and to `sites/daily/` at 00:00 UTC.
 This applies to `common_site_config.json`, `apps.txt`, and each site's
 `site_config.json`.
 
+### Outbound SMTP (`networkPolicy.smtpEgress`)
+
+The rendered NetworkPolicies are default-deny with explicit allow-lists, so
+sending mail fails silently until the submission port is allowed. The chart
+ships that grant **disabled**:
+
+```yaml
+networkPolicy:
+  smtpEgress:
+    enabled: false # enable only if the cluster has no cluster-wide rule
+    port: 2525     # 25/465 are often filtered upstream; 2525 works on Gcore
+    cidr: 0.0.0.0/0
+```
+
+Enabling it adds the port to `web-policy` and `workers-scheduler-policy` egress
+for any public destination outside `podCidr`/`serviceCidr`/`nodeCidr`. A
+Kubernetes NetworkPolicy cannot match a hostname, so the grant is necessarily
+CIDR-wide — accept that TCP 2525 reaches any public host, not just your relay.
+
+On Cilium clusters prefer a cluster-scoped `CiliumClusterwideNetworkPolicy`
+with an explicit system-namespace exclusion instead: it covers future
+namespaces and cannot be defeated by additive per-namespace rules. Note that a
+Cilium egress policy is an allow-list for every endpoint it selects, so a
+wildcard `endpointSelector` replaces kube-dns' own egress and breaks DNS
+cluster-wide.
+
 ---
 
 ## License

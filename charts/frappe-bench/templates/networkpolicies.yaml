@@ -192,6 +192,21 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+{{- if $np.smtpEgress.enabled }}
+    # SMTP submission (disabled by default, see values.yaml). CIDR-wide by
+    # construction: a Kubernetes NetworkPolicy cannot match a hostname, so this
+    # grants the port to every public destination outside the cluster CIDRs.
+    - to:
+        - ipBlock:
+            cidr: {{ $np.smtpEgress.cidr | default "0.0.0.0/0" }}
+            except:
+              - {{ $np.podCidr }}
+              - {{ $np.serviceCidr }}
+              - {{ $np.nodeCidr }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.smtpEgress.port | default 2525 }}
+{{- end }}
 ---
 # 5) SocketIO ingress and egress
 apiVersion: networking.k8s.io/v1
@@ -286,6 +301,21 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+{{- if $np.smtpEgress.enabled }}
+    # SMTP submission (disabled by default, see values.yaml). CIDR-wide by
+    # construction: a Kubernetes NetworkPolicy cannot match a hostname, so this
+    # grants the port to every public destination outside the cluster CIDRs.
+    - to:
+        - ipBlock:
+            cidr: {{ $np.smtpEgress.cidr | default "0.0.0.0/0" }}
+            except:
+              - {{ $np.podCidr }}
+              - {{ $np.serviceCidr }}
+              - {{ $np.nodeCidr }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.smtpEgress.port | default 2525 }}
+{{- end }}
 ---
 # 7) Database ingress isolation
 apiVersion: networking.k8s.io/v1

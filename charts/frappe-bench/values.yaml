@@ -107,6 +107,22 @@ networkPolicy:
   # MariaDBs carry their own labels; default matches a plain `app: mariadb`).
   mariadbPodLabels:
     app: mariadb
+  # Outbound SMTP submission for Frappe email. DISABLED BY DEFAULT.
+  #
+  # A Kubernetes NetworkPolicy cannot match a hostname, so enabling this allows
+  # the port to ANY public destination outside the cluster CIDRs. On a Cilium
+  # cluster prefer a cluster-scoped CiliumClusterwideNetworkPolicy with an
+  # explicit system-namespace exclusion (see the infrastructure-playbook repo,
+  # gitops/kube-system/cluster-egress-policies). Enabling both would make a
+  # hostname-scoped grant meaningless, because NetworkPolicy rules are
+  # additive: egress becomes "any host on this port".
+  #
+  # Ports 25 and 465 are often filtered upstream (Gcore edge); 2525 is the
+  # submission port that works there.
+  smtpEgress:
+    enabled: false
+    port: 2525
+    cidr: 0.0.0.0/0
 
 # Per-process tuning.
 web:
