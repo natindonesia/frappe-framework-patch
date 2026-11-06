@@ -32,6 +32,18 @@ imagePullSecrets:
 {{- end }}
 {{- end -}}
 
+{{/*
+Checksum of the settings the migrate Job writes into common_site_config.json.
+
+Frappe reads that file once per process at startup, so a values-only change
+(a new mail relay, a new sender) would leave running web/worker/scheduler
+pods on the old in-memory conf. Putting this checksum on their pod templates
+turns any config change into a rolling update.
+*/}}
+{{- define "frappe-bench.configChecksum" -}}
+{{- printf "%v%v" (toYaml .Values.commonSiteConfig) (toYaml .Values.smtp) | sha256sum -}}
+{{- end -}}
+
 {{/* The namespace the bench runs in. */}}
 {{- define "frappe-bench.namespace" -}}
 {{- .Release.Namespace -}}

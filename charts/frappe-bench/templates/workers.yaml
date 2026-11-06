@@ -16,6 +16,8 @@ spec:
     metadata:
       labels:
         app: worker-{{ $name }}
+      annotations:
+        checksum/site-config: {{ include "frappe-bench.configChecksum" $ | quote }}
     spec:
       {{- include "frappe-bench.podDefaults" $ | nindent 6 }}
       containers:

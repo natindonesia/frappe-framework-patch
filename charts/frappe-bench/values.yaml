@@ -216,6 +216,43 @@ mariadb:
 commonSiteConfig:
   max_queued_jobs: 10000
 
+# Default outgoing mail for every site in the bench.
+#
+# Frappe resolves the outgoing account in this order:
+#   1. a DB `Email Account` with `default_outgoing = 1`
+#   2. `EmailAccount.find_from_config()` -> the `mail_*` keys this block writes
+#      into common_site_config.json
+#   3. a dummy notifications@example.com account (mail fails, queue backs up)
+#
+# Step 2 is bench-wide, so enabling this makes *every* site send mail —
+# including sites created after this release — with no per-site step. A site
+# that has its own default outgoing `Email Account` keeps it (step 1 wins).
+#
+# Credentials are NEVER part of values. They are read at migrate time from a
+# Secret via secretKeyRef (normally a SealedSecret named
+# `<canonical-name>-smtp`), so the git-tracked form stays a sealed blob.
+smtp:
+  enabled: false
+  # Relay endpoint. The Gcore edge filters 25 and 465, and 465 is not
+  # expressible from config at all (Frappe maps no `use_ssl_for_outgoing`
+  # key), so use 2525 with STARTTLS.
+  host: smtp.mailersend.net
+  port: 2525
+  useTls: true
+  # Envelope From. MUST be set: without `auto_email_id` Frappe falls back to
+  # `mail_login`, which is usually a provider login (e.g. MS_xxx@domain) and
+  # not a deliverable sender, so relays reject the message.
+  autoEmailId: ""
+  # Display name for outgoing mail (`email_sender_name`).
+  senderName: ""
+  # Force the account's own email_id as the From header so callers cannot
+  # override it with a domain the relay rejects.
+  alwaysUseAccountEmailIdAsSender: true
+  # Secret holding the credentials. Required when enabled.
+  existingSecret: ""
+  loginKey: mail_login
+  passwordKey: mail_password
+
 # Pre-sync release migration Job
 migrateJob:
   enabled: true

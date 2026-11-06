@@ -86,6 +86,39 @@ spec:
               {{- end }}
               {{- end }}
 
+              {{- if .Values.smtp.enabled }}
+              # Default outgoing mail. These keys live in common_site_config.json,
+              # so every site in the bench (including ones created later) inherits
+              # them through EmailAccount.find_from_config().
+              #
+              # `--parse` runs ast.literal_eval, so it is used only for the
+              # int/bool keys. Credentials are passed verbatim: a quoted password
+              # would be stored with the quotes, and an unquoted one that happens
+              # to look like a literal could be mangled.
+              if [ -z "${SMTP_LOGIN:-}" ] || [ -z "${SMTP_PASSWORD:-}" ]; then
+                echo "FATAL: smtp.enabled is true but SMTP_LOGIN/SMTP_PASSWORD are empty." >&2
+                echo "Check that the Secret named in smtp.existingSecret carries the smtp.loginKey and smtp.passwordKey keys." >&2
+                exit 1
+              fi
+              echo "Applying default outgoing mail settings..."
+              bench set-config -g mail_server {{ .Values.smtp.host | quote }}
+              bench set-config -g mail_port {{ .Values.smtp.port | quote }} --parse
+              {{- if .Values.smtp.useTls }}
+              bench set-config -g use_tls 1 --parse
+              {{- end }}
+              bench set-config -g mail_login "$SMTP_LOGIN"
+              bench set-config -g mail_password "$SMTP_PASSWORD"
+              {{- if .Values.smtp.autoEmailId }}
+              bench set-config -g auto_email_id {{ .Values.smtp.autoEmailId | quote }}
+              {{- end }}
+              {{- if .Values.smtp.senderName }}
+              bench set-config -g email_sender_name {{ .Values.smtp.senderName | quote }}
+              {{- end }}
+              {{- if .Values.smtp.alwaysUseAccountEmailIdAsSender }}
+              bench set-config -g always_use_account_email_id_as_sender 1 --parse
+              {{- end }}
+              {{- end }}
+
               {{- if .Values.migrateJob.validateEncryptionKeys }}
               # Fail fast on malformed per-site secret material. A bad encryption_key
               # surfaces much later as "Encryption key is in invalid format" at runtime;
@@ -136,6 +169,23 @@ spec:
                   key: {{ default "mariadb-root-password" .Values.backend.db.secretKey }}
             - name: PYTHONPATH
               value: {{ include "frappe-bench.pythonPath" . | quote }}
+            {{- if .Values.smtp.enabled }}
+            # Non-optional refs: if the Secret is not there yet the pod stays in
+            # CreateContainerConfigError instead of silently shipping a bench
+            # with no working outgoing mail. Apply the SealedSecret in its own
+            # revision so the controller has produced the Secret before a sync
+            # needs it.
+            - name: SMTP_LOGIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "smtp.existingSecret is required when smtp.enabled" .Values.smtp.existingSecret }}
+                  key: {{ .Values.smtp.loginKey }}
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.smtp.existingSecret }}
+                  key: {{ .Values.smtp.passwordKey }}
+            {{- end }}
           volumeMounts:
             - name: sites-data
               mountPath: /home/frappe/frappe-bench/sites

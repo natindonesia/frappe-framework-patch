@@ -165,6 +165,68 @@ also copied to `sites/hourly/` on every run and to `sites/daily/` at 00:00 UTC.
 This applies to `common_site_config.json`, `apps.txt`, and each site's
 `site_config.json`.
 
+### Default outgoing mail (`smtp`)
+
+Frappe resolves the outgoing account in this order:
+
+1. a DB `Email Account` with `default_outgoing = 1`
+2. `EmailAccount.find_from_config()` → the `mail_*` keys in
+   `common_site_config.json`
+3. a dummy `notifications@example.com` account, which fails and backs up the
+   outgoing queue
+
+The `smtp` block writes step 2 during the migrate Job. Because that file is
+bench-wide, **every site inherits it, including sites created later** — no
+per-site step, and no chart change when a new site is added.
+
+```yaml
+smtp:
+  enabled: true
+  host: smtp.mailersend.net
+  port: 2525
+  useTls: true                    # STARTTLS; 465 is not expressible from config
+  autoEmailId: support@example.com
+  senderName: Example Support
+  alwaysUseAccountEmailIdAsSender: true
+  existingSecret: my-bench-smtp   # Secret, normally a SealedSecret
+  loginKey: mail_login
+  passwordKey: mail_password
+```
+
+The credentials are read from `existingSecret` with **non-optional**
+`secretKeyRef`s, so a missing Secret blocks the hook (fail-closed) instead of
+shipping a bench whose mail silently piles up in `tabEmail Queue`. Apply the
+SealedSecret in an earlier revision: Argo CD does not wait for the
+sealed-secrets controller to materialise the Secret, so a same-sync race shows
+up as a hook timeout.
+
+Non-secret keys use `bench set-config -g --parse`, which evaluates
+`ast.literal_eval`; credentials are passed verbatim because a quoted password
+would be stored with the quotes.
+
+Set `autoEmailId`. Without it Frappe falls back to `mail_login`, which is
+usually a provider login (`MS_xxx@domain`) and not a deliverable sender, so the
+relay rejects the message.
+
+Caveats:
+
+- `mail_password` lands **cleartext** in `sites/common_site_config.json` (mode
+  `644`, owned by `frappe`) on the sites volume, and that file is part of the
+  backup artifact uploaded to S3. Sealing protects the git history, not the
+  cluster or the backups. Never rely on this for credentials that must stay
+  confidential from cluster readers.
+- A site that already has a default outgoing `Email Account` keeps it; config
+  is the fallback, not an override.
+- `use_ssl_for_outgoing` has no config equivalent, so implicit-SSL relays on
+  465 cannot be expressed here.
+- Disabling `smtp` does not delete the keys already written to
+  `common_site_config.json`. Blank them (`bench set-config -g mail_server ""`)
+  if you need the bench to stop pointing at the relay.
+
+The pods that read the config once at startup (web, workers, scheduler,
+socketio) carry a `checksum/site-config` annotation, so any change to
+`commonSiteConfig` or `smtp` rolls them.
+
 ### Outbound SMTP (`networkPolicy.smtpEgress`)
 
 The rendered NetworkPolicies are default-deny with explicit allow-lists, so
