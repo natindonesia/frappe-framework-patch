@@ -227,6 +227,21 @@ The pods that read the config once at startup (web, workers, scheduler,
 socketio) carry a `checksum/site-config` annotation, so any change to
 `commonSiteConfig` or `smtp` rolls them.
 
+#### Rotating the credential
+
+The annotation hashes the values, not the Secret, so **re-sealing
+`existingSecret` does not roll the pods** and they keep using the password they
+read at startup. After re-sealing, set `smtp.credentialVersion` to anything new
+(e.g. the rotation date) and sync:
+
+```yaml
+smtp:
+  credentialVersion: "2026-11-06"
+```
+
+That is the only reason the field exists. Leave it empty until the first
+rotation.
+
 ### Outbound SMTP (`networkPolicy.smtpEgress`)
 
 The rendered NetworkPolicies are default-deny with explicit allow-lists, so

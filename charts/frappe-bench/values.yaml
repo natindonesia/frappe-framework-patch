@@ -252,6 +252,11 @@ smtp:
   existingSecret: ""
   loginKey: mail_login
   passwordKey: mail_password
+  # Bump this (any string) when you re-seal the credential. The credentials
+  # themselves live in the Secret, so the checksum below cannot see a rotated
+  # Secret; without a new value here the pods keep using the old password they
+  # read at startup. Changing it rolls web/workers/scheduler/socketio.
+  credentialVersion: ""
 
 # Pre-sync release migration Job
 migrateJob:
