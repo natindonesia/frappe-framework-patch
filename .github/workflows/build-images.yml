@@ -42,6 +42,8 @@ env:
   # SEMGREP_VERSION empty to track the latest Semgrep release/rules.
   TRIVY_VERSION: 0.74.0
   SEMGREP_VERSION: ''
+  # Pinned cosign used to sign image digests and verify them again in the gate.
+  COSIGN_VERSION: v3.1.3
   # Fail the security jobs on HIGH/CRITICAL findings for Trivy and ERROR-level
   # Semgrep findings. Set SECURITY_FAIL_ON_FINDINGS=false (Trivy) to report only.
   SECURITY_SEVERITY: CRITICAL,HIGH
@@ -372,9 +374,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.2
-        with:
-          cosign-release: v3.1.3
+        run: bash scripts/ci/install-cosign.sh
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0.24.3
         with:
@@ -425,9 +425,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.2
-        with:
-          cosign-release: v3.1.3
+        run: bash scripts/ci/install-cosign.sh
       - name: Verify signatures and attestations
         env:
           DIGESTS_JSON: ${{ needs.publish.outputs.digests_json }}
