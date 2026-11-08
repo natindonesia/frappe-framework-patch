@@ -66,13 +66,72 @@ set_image_metadata_args() {
   local source="${IMAGE_SOURCE:-https://github.com/natindonesia/frappe-framework-patch}"
   local created="${IMAGE_CREATED:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   local frappe_sha="${FRAPPE_SHA:-$(git -C frappe rev-parse HEAD 2>/dev/null || echo unknown)}"
+  local frappe_version="${FRAPPE_VERSION:-$(frappe_release_version)}"
   IMAGE_METADATA_ARGS=(
     --build-arg "IMAGE_VERSION=${version}"
     --build-arg "IMAGE_REVISION=${revision}"
     --build-arg "IMAGE_SOURCE=${source}"
     --build-arg "IMAGE_CREATED=${created}"
     --build-arg "FRAPPE_SHA=${frappe_sha}"
+    --build-arg "FRAPPE_VERSION=${frappe_version}"
   )
+}
+
+# frappe_release_version() -- print the pinned upstream Frappe release version
+# (e.g. 16.55.2) from the submodule's __init__.py. Used to tag immutable image
+# releases, so it must never be empty or guessed.
+frappe_release_version() {
+  local init="frappe/frappe/__init__.py" version
+  [ -f "$init" ] || { echo "missing ${init} (initialize the frappe submodule)" >&2; return 1; }
+  version="$(awk -F'"' '/^__version__[[:space:]]*=/ {print $2; exit}' "$init")"
+  [ -n "$version" ] || { echo "no __version__ in ${init}" >&2; return 1; }
+  [ "$version" != "develop" ] || { echo "submodule reports 'develop', not a release" >&2; return 1; }
+  printf '%s' "$version"
+}
+
+# image_frappe_version <image> -- print the Frappe release version baked into
+# the image label by the Dockerfile. Read from the image so the publish stage
+# needs neither the submodule nor the build metadata.
+image_frappe_version() {
+  local version
+  version="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.frappe-version"}}' "$1" 2>/dev/null || true)"
+  case "$version" in
+    "" | "<no value>")
+      echo "image $1 has no org.opencontainers.image.frappe-version label" >&2
+      return 1 ;;
+  esac
+  printf '%s' "$version"
+}
+
+# frappe_release_version_for_run -- ensure FRAPPE_VERSION is set for the rest of
+# the script. The publish job loads the tested images, so when the environment
+# does not supply the version the image label is authoritative.
+frappe_release_version_for_run() {
+  if [ -z "${FRAPPE_VERSION:-}" ]; then
+    FRAPPE_VERSION="$(image_frappe_version frappe:latest)"
+    export FRAPPE_VERSION
+  fi
+  printf '%s' "$FRAPPE_VERSION"
+}
+
+# published_tag <variant> -- print the tag a variant is published under in THIS
+# run. Moving tags (latest / base / latest-granian) are only advanced from the
+# default branch; every run also publishes the immutable release tags derived
+# from the pinned Frappe version (<version>, <version>-base, <version>-granian),
+# so an older release can be re-published without moving the floating tags.
+published_tag() {
+  local variant="$1" version="${FRAPPE_VERSION:-}"
+  if [ "${PUBLISH_MOVING_TAGS:-1}" = "1" ]; then
+    printf '%s' "$variant"
+    return 0
+  fi
+  [ -n "$version" ] || { echo "FRAPPE_VERSION required for immutable release tags" >&2; exit 1; }
+  case "$variant" in
+    base) printf '%s-base' "$version" ;;
+    latest) printf '%s' "$version" ;;
+    latest-granian) printf '%s-granian' "$version" ;;
+    *) echo "unknown variant: ${variant}" >&2; exit 1 ;;
+  esac
 }
 
 # build_cache_ref() -- print the single buildx registry-cache reference shared

@@ -3,6 +3,7 @@
 # release tags resolve to, regardless of age:
 #   * the manifest each keep-tag points at (frappe:latest/base/latest-granian)
 #   * that manifest's cosign signature (.sig) and attestation (.att) manifests
+#   * any version tagged with a KEEP_TAG_PATTERN match (immutable releases)
 # Everything else older than CLEANUP_MAX_AGE_DAYS (default 7) is deleted —
 # including the sha256-<digest> versions GHCR auto-lists for retired
 # signatures/attestations (the package-page noise).
@@ -31,33 +32,6 @@ REGISTRY="${SECONDARY_REGISTRY_URL:-ghcr.io}"
 IMAGE="$(lower "$REGISTRY")/$(lower "$NAMESPACE")/$PACKAGE"
 MAX_AGE_DAYS="${CLEANUP_MAX_AGE_DAYS:-7}"
 
-# --- Resolve currently-protected manifest digests ---------------------------
-# hex digest (no "sha256:" prefix) of each keep-tag, plus the cosign/attest
-# sidecar manifests referenced via sha256-<hex>.sig / .att / referrer tags.
-protected_hexes=""
-collect_digest() {
-  local digest
-  digest="$(docker buildx imagetools inspect "$1" 2>/dev/null | awk '/^Digest:/ {print $2; exit}')" || return 0
-  [ -n "$digest" ] || return 0
-  protected_hexes+=" ${digest#sha256:}"
-}
-
-for tag in "$@"; do
-  collect_digest "${IMAGE}:${tag}"
-done
-# Sidecars of the FIRST keep-tag's image(s): cosign signature + attestation,
-# and GitHub attest referrers tagged sha256-<hex>. Check for every keep-tag.
-for tag in "$@"; do
-  subj="$(docker buildx imagetools inspect "${IMAGE}:${tag}" 2>/dev/null | awk '/^Digest:/ {print $2; exit}')" || continue
-  [ -n "$subj" ] || continue
-  hex="${subj#sha256:}"
-  collect_digest "${IMAGE}:sha256-${hex}.sig"
-  collect_digest "${IMAGE}:sha256-${hex}.att"
-  collect_digest "${IMAGE}:sha256-${hex}"
-done
-[ -n "$protected_hexes" ] || echo "warn: no digests resolvable for ${IMAGE} (package missing yet?)" >&2
-echo "Protected manifest digests (${#protected_hexes}):$(for h in $protected_hexes; do printf ' sha256:%s' "$h"; done)"
-
 # --- List all package versions ----------------------------------------------
 # Package is repo-linked; it lives under the org when the owner is an org.
 api_base="/user/packages"
@@ -69,21 +43,69 @@ versions_url="${api_base}/container/${PACKAGE}/versions?per_page=100"
 # Fail fast on auth/permission problems before the silent process-substitution loop.
 gh api "${api_base}/container/${PACKAGE}/versions?per_page=1" --jq 'length' >/dev/null
 
+mapfile -t version_lines < <(
+  gh api --paginate "$versions_url" \
+    --jq '.[] | [.id, .name, .created_at, ([.metadata.container.tags // [] | join(",")])] | @tsv' 2>/dev/null
+)
+
+# Keep-tag names that must never age out (user policy: regardless of days).
+keep_tags="$*"
+# Optional regex (KEEP_TAG_PATTERN) for tags that are permanent by shape, e.g.
+# immutable release tags (<version>, <version>-base, <version>-granian), which
+# must survive after the floating tags have moved on to a newer release.
+KEEP_TAG_PATTERN="${KEEP_TAG_PATTERN:-}"
+
+# Expand the keep set with every durable release tag currently in the package,
+# so its manifest AND cosign/attestation sidecars stay protected too — the
+# floating tags point at the newest release only.
+if [ -n "$KEEP_TAG_PATTERN" ]; then
+  pattern_tags="$(
+    printf '%s\n' "${version_lines[@]}" \
+      | cut -f4 \
+      | tr ',' '\n' \
+      | grep -E -- "$KEEP_TAG_PATTERN" \
+      | sort -u || true
+  )"
+  while IFS= read -r tag; do
+    [ -n "$tag" ] && keep_tags="${keep_tags} ${tag}"
+  done <<<"$pattern_tags"
+fi
+
+# --- Resolve currently-protected manifest digests ---------------------------
+# hex digest (no "sha256:" prefix) of each keep-tag, plus the cosign/attest
+# sidecar manifests referenced via sha256-<hex>.sig / .att / referrer tags.
+protected_hexes=""
+collect_digest() {
+  local digest
+  digest="$(docker buildx imagetools inspect "$1" 2>/dev/null | awk '/^Digest:/ {print $2; exit}')" || return 0
+  [ -n "$digest" ] || return 0
+  protected_hexes+=" ${digest#sha256:}"
+}
+
+for tag in $keep_tags; do
+  collect_digest "${IMAGE}:${tag}"
+done
+# cosign signature + attestation sidecars and GitHub attest referrers of every
+# protected tag (named keep-tag or durable release tag).
+for tag in $keep_tags; do
+  subj="$(docker buildx imagetools inspect "${IMAGE}:${tag}" 2>/dev/null | awk '/^Digest:/ {print $2; exit}')" || continue
+  [ -n "$subj" ] || continue
+  hex="${subj#sha256:}"
+  collect_digest "${IMAGE}:sha256-${hex}.sig"
+  collect_digest "${IMAGE}:sha256-${hex}.att"
+  collect_digest "${IMAGE}:sha256-${hex}"
+done
+[ -n "$protected_hexes" ] || echo "warn: no digests resolvable for ${IMAGE} (package missing yet?)" >&2
+echo "Protected manifest digests (${#protected_hexes}):$(for h in $protected_hexes; do printf ' sha256:%s' "$h"; done)"
+
 cutoff_epoch="$(date -u -d "${MAX_AGE_DAYS} days ago" +%s)"
 now_epoch="$(date -u +%s)"
 deleted=0
 kept=0
 
-# Keep-tag names that must never age out (user policy: regardless of days).
-keep_tags="$*"
 # Sidecar tag suffixes for protected subjects, e.g. sha256-<hex>(.sig|.att)?
 # Build one extended regex of protected hexes for tag matching.
 hex_alt="$(printf '%s|' $protected_hexes)"; hex_alt="${hex_alt%|}"
-
-mapfile -t version_lines < <(
-  gh api --paginate "$versions_url" \
-    --jq '.[] | [.id, .name, .created_at, ([.metadata.container.tags // [] | join(",")])] | @tsv' 2>/dev/null
-)
 
 for line in "${version_lines[@]}"; do
   IFS=$'\t' read -r id name created_at tags_json <<<"$line"
@@ -95,11 +117,18 @@ for line in "${version_lines[@]}"; do
   fi
   if [ "$protected" -eq 0 ] && [ -n "$tags_json" ]; then
     # Any tag that is a keep-tag, or a sha256- sidecar of a protected digest.
-    if printf '%s' "$tags_json" | jq -re --arg kt "$keep_tags" --arg hx "$hex_alt" '
-        .[] | select(
-             (index($kt | split(" ") | .[]) != null)
+    # tags_json is a comma-joined tag list, so hand it to jq as data, not JSON.
+    if jq -ren --arg tags "$tags_json" --arg kt "$keep_tags" --arg hx "$hex_alt" '
+        $tags | split(",")[] | select(
+             (index($kt | split(" ") | .[] | select(. != "")) != null)
           or (test("^sha256-(" + $hx + ")(\\.(sig|att))?$"))
         )' >/dev/null 2>&1; then
+      protected=1
+    fi
+  fi
+  if [ -n "$KEEP_TAG_PATTERN" ] && [ -n "$tags_json" ]; then
+    if jq -ren --arg tags "$tags_json" --arg re "$KEEP_TAG_PATTERN" '
+        $tags | split(",")[] | select(test($re))' >/dev/null 2>&1; then
       protected=1
     fi
   fi

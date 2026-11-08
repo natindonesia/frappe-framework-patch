@@ -9,9 +9,9 @@ the submodule.
 
 ## Published images
 
-`ghcr.io/natindonesia/frappe` — three tags, nothing else. When a primary
-registry is configured (`REGISTRY_URL`), every commit-built image is mirrored
-there with the same digests; the two registries are independent, so an
+`ghcr.io/natindonesia/frappe` — three variants under two tag families. When a
+primary registry is configured (`REGISTRY_URL`), every commit-built image is
+mirrored there with the same digests; the two registries are independent, so an
 unavailable one never blocks the other.
 
 | Tag | What it is | Pull |
@@ -19,6 +19,21 @@ unavailable one never blocks the other.
 | `latest` | **Patched production image** (default choice). Pinned Frappe + `patches/` applied, frappe app assets rebuilt. | `docker pull ghcr.io/natindonesia/frappe:latest` |
 | `base` | Unpatched reference image: identical bench/runtime, no local patches. Use to diff behavior against upstream. | `docker pull ghcr.io/natindonesia/frappe:base` |
 | `latest-granian` | `latest` + [Granian](https://github.com/emmett-framework/granian) installed in the bench venv as an alternative to gunicorn. | `docker pull ghcr.io/natindonesia/frappe:latest-granian` |
+
+The floating tags above only move from the default branch. Every publish also
+writes the same three images under the pinned Frappe release version
+(`org.opencontainers.image.frappe-version`), which never move:
+
+| Immutable tag | Equals |
+|---|---|
+| `<version>` | `latest` (patched production) |
+| `<version>-base` | `base` (unpatched reference) |
+| `<version>-granian` | `latest-granian` |
+
+So `docker pull ghcr.io/natindonesia/frappe:16.55.2-granian` pins a release,
+and an older release can be re-published from its `release/frappe-<version>`
+branch without touching `latest`. Release tags are exempt from the GHCR cleanup
+job.
 
 Pin by digest for production — tags move, digests do not:
 
