@@ -1,19 +1,19 @@
 diff --git a/frappe/desk/page/desktop/desktop.js b/frappe/desk/page/desktop/desktop.js
-index c5fea48..fcf8953 100644
+index 4d4c89f..d359f4e 100644
 --- a/frappe/desk/page/desktop/desktop.js
 +++ b/frappe/desk/page/desktop/desktop.js
-@@ -551,14 +551,6 @@ class DesktopPage {
+@@ -277,14 +277,6 @@ class DesktopPage {
  				},
  				order: 20,
  			},
 -			{
 -				icon: "info",
 -				label: "About",
--				onClick: function () {
+-				onclick: function () {
 -					return frappe.ui.toolbar.show_about();
 -				},
 -				order: 30,
 -			},
- 			{
- 				icon: "rotate-ccw",
- 				label: "Reset Desktop Layout",
+ 		];
+ 		// sort() is stable, so items sharing an `order` keep the order they were added in.
+ 		menu_items = [...menu_items, ...this.desktop_menu_items].sort(

@@ -1,8 +1,8 @@
 diff --git a/frappe/auth.py b/frappe/auth.py
-index c3c83f1ac9..03a474f699 100644
+index 7c1605f..a2fc1ad 100644
 --- a/frappe/auth.py
 +++ b/frappe/auth.py
-@@ -724,6 +724,20 @@ def validate_api_key_secret(api_key, api_secret, frappe_authorization_source=Non
+@@ -725,6 +725,20 @@ def validate_api_key_secret(api_key, api_secret, frappe_authorization_source=Non
  		raise frappe.AuthenticationError
  
  	doctype = frappe_authorization_source or "User"
@@ -23,7 +23,7 @@ index c3c83f1ac9..03a474f699 100644
  	try:
  		docname = frappe.db.get_value(
  			doctype=doctype, filters={"api_key": api_key, "enabled": True}, fieldname=["name"]
-@@ -743,6 +757,14 @@ def validate_api_key_secret(api_key, api_secret, frappe_authorization_source=Non
+@@ -744,6 +758,14 @@ def validate_api_key_secret(api_key, api_secret, frappe_authorization_source=Non
  		if frappe.local.login_manager.user in ("", "Guest"):
  			frappe.set_user(user)
  		frappe.local.form_dict = form_dict
@@ -39,10 +39,10 @@ index c3c83f1ac9..03a474f699 100644
  		raise frappe.AuthenticationError
  
 diff --git a/frappe/cache_manager.py b/frappe/cache_manager.py
-index fc4cb7e0d1..db991498f4 100644
+index 3668327..b62b010 100644
 --- a/frappe/cache_manager.py
 +++ b/frappe/cache_manager.py
-@@ -88,11 +88,24 @@ def clear_user_cache(user=None):
+@@ -99,11 +99,24 @@ def clear_user_cache(user=None):
  	if user:
  		frappe.cache.hdel_names(user_cache_keys, user)
  		frappe.cache.delete_keys("user:" + user)
@@ -68,10 +68,10 @@ index fc4cb7e0d1..db991498f4 100644
  
  def clear_domain_cache(user=None):
 diff --git a/frappe/core/doctype/user/user.py b/frappe/core/doctype/user/user.py
-index 8c7900cdc7..d8162e00bf 100644
+index 4ff8597..5aa057c 100644
 --- a/frappe/core/doctype/user/user.py
 +++ b/frappe/core/doctype/user/user.py
-@@ -323,6 +323,14 @@ class User(Document):
+@@ -331,6 +331,14 @@ class User(Document):
  		self.share_with_self()
  		clear_notifications(user=self.name)
  		frappe.clear_cache(user=self.name)
@@ -85,8 +85,8 @@ index 8c7900cdc7..d8162e00bf 100644
 +			pass
  		now = frappe.in_test or frappe.flags.in_install
  		self.send_password_notification(self.__new_password)
- 		frappe.enqueue(
-@@ -589,6 +597,11 @@ class User(Document):
+ 		self.__new_password = None
+@@ -629,6 +637,11 @@ class User(Document):
  
  	def on_trash(self):
  		frappe.clear_cache(user=self.name)
@@ -98,7 +98,7 @@ index 8c7900cdc7..d8162e00bf 100644
  		if self.name in STANDARD_USERS:
  			throw(_("User {0} cannot be deleted").format(self.name))
  
-@@ -1440,6 +1453,11 @@ def generate_keys(user: str):
+@@ -1573,6 +1586,11 @@ def generate_keys(user: str):
  		user_details.api_key = api_key
  	user_details.api_secret = api_secret
  	user_details.save()
