@@ -23,6 +23,37 @@ sarif_dir() {
   printf '%s' "$SECURITY_SARIF_DIR"
 }
 
+# download_release_asset <url> <dest> <tag> <repo> -- download a GitHub release
+# asset with bounded retries, then fall back to the GitHub CLI (which resolves
+# assets through the API rather than the release CDN). GitHub's release CDN
+# intermittently answers 5xx for minutes at a time, which must not fail a scan
+# before it even starts.
+download_release_asset() {
+  local url="$1" dest="$2" tag="$3" repo="$4" attempt file tmp
+  file="$(basename "$dest")"
+
+  for attempt in 1 2 3; do
+    if curl -fsSL --connect-timeout 20 --max-time 600 \
+        --retry 2 --retry-delay 2 --retry-all-errors \
+        "$url" -o "$dest"; then
+      return 0
+    fi
+    echo "download failed (attempt ${attempt}/3): ${file}" >&2
+    [ "$attempt" -lt 3 ] && sleep $((attempt * 3)) || true
+  done
+
+  command -v gh >/dev/null 2>&1 || return 1
+  echo "retrying ${file} via 'gh release download ${tag}'" >&2
+  tmp="$(mktemp -d)"
+  if gh release download "$tag" --repo "$repo" --pattern "$file" --dir "$tmp" >&2; then
+    mv "$tmp/$file" "$dest"
+    rm -rf "$tmp"
+    return 0
+  fi
+  rm -rf "$tmp"
+  return 1
+}
+
 # install_trivy -- downloads the pinned Trivy release tarball, verifies it
 # against the published SHA-256 checksum, and installs the binary.
 install_trivy() {
@@ -52,8 +83,10 @@ install_trivy() {
 
   mkdir -p "$dest"
   echo "Installing Trivy ${version} (${asset})"
-  curl -fsSL "${base}/${asset}" -o "$dest/$asset"
-  curl -fsSL "${base}/${checksums}" -o "$dest/$checksums"
+  download_release_asset "${base}/${asset}" "$dest/$asset" "v${version}" aquasecurity/trivy \
+    || { echo "could not download ${asset}" >&2; return 1; }
+  download_release_asset "${base}/${checksums}" "$dest/$checksums" "v${version}" aquasecurity/trivy \
+    || { echo "could not download ${checksums}" >&2; return 1; }
   ( cd "$dest" && grep -F "$asset" "$checksums" > "${asset}.sha256" \
       && sha256sum -c "${asset}.sha256" )
   tar -xzf "$dest/$asset" -C "$dest" trivy
