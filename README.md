@@ -9,9 +9,10 @@ the submodule.
 
 ## Published images
 
-`ghcr.io/natindonesia/frappe` — three tags, nothing else. Every commit-built
-image also goes to `registry.digitalocean.com/natindonesia/frappe` with the same
-digests.
+`ghcr.io/natindonesia/frappe` — three tags, nothing else. When a primary
+registry is configured (`REGISTRY_URL`), every commit-built image is mirrored
+there with the same digests; the two registries are independent, so an
+unavailable one never blocks the other.
 
 | Tag | What it is | Pull |
 |---|---|---|
@@ -251,10 +252,10 @@ overlays).
 - `build-images.yml` — on push / pull_request. Builds the unpatched `base`
   first (populating the shared registry cache ref), then the patched `latest`
   on top of it, then `latest-granian` from the tested local `frappe:latest`;
-  validates all three, then on an approved main push publishes exactly
-  `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:latest`,
-  `frappe:base`, and `frappe:latest-granian` plus the same three tags to
-  `ghcr.io/<owner>/frappe:*`.
+  validates all three, then on an approved main push publishes
+  `ghcr.io/<owner>/frappe:latest`, `frappe:base`, and
+  `frappe:latest-granian`, plus the same three tags to the optional primary
+  registry (`${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:*`) when configured.
 - `cleanup-ghcr-versions.yml` — daily prune of stale GHCR package versions
   (keeps current-release digests, signatures, and attestations).
 - `update-upstream.yml` — manual (`workflow_dispatch`). Advances `frappe/` to
@@ -290,15 +291,17 @@ appends more rule packs.
 
 ## Registry configuration
 
-Set the variables `REGISTRY_URL` (default `registry.digitalocean.com`) and
-`REGISTRY_NAMESPACE` (default `natindonesia`), and the secrets
-`REGISTRY_USERNAME`/`REGISTRY_PASSWORD` (or the
-`DIGITALOCEAN_EMAIL`/`DIGITALOCEAN_ACCESS_TOKEN` fallbacks). Secrets are used
-only by the registry login action and are never printed.
-
-The second registry is the GitHub Container Registry and needs no secret — the
+The GitHub Container Registry is always published and needs no secret — the
 workflow logs in with its own `GITHUB_TOKEN` and `permissions: packages: write`.
-Override the variables `SECONDARY_REGISTRY_URL` (default `ghcr.io`) and
-`SECONDARY_REGISTRY_NAMESPACE` (default the repository owner, lowercased by the
-publish scripts). Publishing to it is skipped only when `SECONDARY_REGISTRY_URL`
-is set to an empty value.
+It is configured by the variables `SECONDARY_REGISTRY_URL` (default `ghcr.io`)
+and `SECONDARY_REGISTRY_NAMESPACE` (default the repository owner, lowercased by
+the publish scripts). Publishing to it is skipped only when
+`SECONDARY_REGISTRY_URL` is empty.
+
+A second, optional registry can mirror the same tested images. Set the
+variables `REGISTRY_URL` and `REGISTRY_NAMESPACE` (both empty by default, which
+disables it) plus the secrets `REGISTRY_USERNAME`/`REGISTRY_PASSWORD` (or the
+`DIGITALOCEAN_EMAIL`/`DIGITALOCEAN_ACCESS_TOKEN` fallbacks). Secrets are used
+only by the registry login action and are never printed. Every configured
+registry is pushed independently: a 401 or a missing repository fails the job
+but never prevents the images from reaching the other registry.

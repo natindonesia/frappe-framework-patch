@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
 # Promote the EXACT tested local Granian image (layered on this run's vanilla)
-# -> registry tag latest-granian. NO re-build, NO re-assembly on another runner.
+# to the configured registries as :latest-granian. NO re-build, NO re-assembly on
+# another runner.
 set -euo pipefail
 # shellcheck source=scripts/ci/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-: "${REGISTRY_URL:?REGISTRY_URL required}"
-: "${REGISTRY_NAMESPACE:?REGISTRY_NAMESPACE required}"
-REGISTRY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}"
-echo "Publishing tested granian -> ${REGISTRY}/frappe:latest-granian"
-docker tag frappe-granian:latest "${REGISTRY}/frappe:latest-granian"
-push_with_retry "${REGISTRY}/frappe:latest-granian"
-# Optional second registry (GitHub Container Registry) — same tested image.
-publish_secondary frappe-granian:latest frappe:latest-granian
+require_registry
+echo "Publishing tested granian image"
+publish_all frappe-granian:latest frappe:latest-granian

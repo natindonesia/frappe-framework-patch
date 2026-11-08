@@ -5,8 +5,10 @@
 # + CWE Top 25 SAST, Trivy source/config, and Trivy image scans) runs in
 # parallel; publish happens only after every matrix entry AND every security
 # job passes. No downstream rebuild, no temporary registry tags.
-# Publish promotes those exact tested images to BOTH the primary registry
-# (registry.digitalocean.com) and the GitHub Container Registry (ghcr.io).
+# Publish promotes those exact tested images to every configured registry: the
+# optional primary (e.g. registry.digitalocean.com, only when REGISTRY_URL is
+# set) and the GitHub Container Registry. An unavailable registry never blocks
+# the other one; the job still fails so the breakage stays visible.
 # Finally, the published GHCR digests are attested (SLSA provenance + SPDX SBOM),
 # keylessly signed, and independently verified with a hard-fail gate.
 name: Build & Test Docker and Granian Images
@@ -41,10 +43,15 @@ env:
   # Semgrep findings. Set SECURITY_FAIL_ON_FINDINGS=false (Trivy) to report only.
   SECURITY_SEVERITY: CRITICAL,HIGH
   SEMGREP_SEVERITY: ERROR
-  REGISTRY_URL: ${{ vars.REGISTRY_URL || 'registry.digitalocean.com' }}
-  REGISTRY_NAMESPACE: ${{ vars.REGISTRY_NAMESPACE || 'natindonesia' }}
-  # Optional SECOND registry (GitHub Container Registry by default). Set the
-  # variable SECONDARY_REGISTRY_URL to empty to publish to the primary only.
+  # Registries. The GitHub Container Registry is always published (it is also
+  # where attestations and signatures live) and needs no secret: the workflow
+  # logs in with its own GITHUB_TOKEN and `permissions: packages: write`.
+  # The OPTIONAL primary registry mirrors the same tested images elsewhere
+  # (e.g. registry.digitalocean.com); it is used only when REGISTRY_URL is set.
+  REGISTRY_URL: ${{ vars.REGISTRY_URL }}
+  REGISTRY_NAMESPACE: ${{ vars.REGISTRY_NAMESPACE }}
+  # The secondary registry is GHCR by default; publishing to it is skipped only
+  # when SECONDARY_REGISTRY_URL is empty.
   SECONDARY_REGISTRY_URL: ${{ vars.SECONDARY_REGISTRY_URL || 'ghcr.io' }}
   SECONDARY_REGISTRY_NAMESPACE: ${{ vars.SECONDARY_REGISTRY_NAMESPACE || github.repository_owner }}
 
@@ -258,8 +265,8 @@ jobs:
 
   # STAGE 3: publish only after every matrix entry AND every security scan passes,
   # then verify digests.
-  # The tested images are promoted byte-for-byte to BOTH registries: the primary
-  # registry (DigitalOcean) and the GitHub Container Registry (ghcr.io).
+  # The tested images are promoted byte-for-byte to every configured registry:
+  # GitHub Container Registry (always) plus the optional primary registry.
   publish:
     name: 'Publish latest/base/latest-granian and verify digests'
     needs: [variant-matrix, sast, trivy-source, trivy-images]
@@ -283,7 +290,8 @@ jobs:
           path: /tmp
       - name: Load tested images
         run: gunzip -c /tmp/tested-images.tar.gz | docker load
-      - name: Login to Container Registry
+      - name: Login to the primary registry
+        if: env.REGISTRY_URL != ''
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY_URL }}

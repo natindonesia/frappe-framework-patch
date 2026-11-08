@@ -6,8 +6,10 @@
 #   * `compose()` runs `docker compose` against the repository's standard CI
 #     stack (project + docker-compose.yml + resources/compose.ci.yml, plus any
 #     extra override files).
-#   * `secondary_registry()` / `publish_secondary()` mirror a tested image to the
-#     optional second registry (ghcr.io).
+#   * `primary_registry()` / `publish_primary()` and `secondary_registry()` /
+#     `publish_secondary()` mirror a tested image to each OPTIONAL registry, so a
+#     run publishes to whatever is configured instead of failing on a registry
+#     that is temporarily unavailable.
 #   * `build_cache_ref()` prints the buildx registry-cache reference shared by
 #     every image build (default ghcr.io — no Actions-cache 10 GB LRU to fight).
 #   * `push_with_retry()` pushes an image with bounded retries for transient
@@ -84,6 +86,51 @@ build_cache_ref() {
   local reg="${BUILD_CACHE_REGISTRY:-ghcr.io}"
   local ns="${BUILD_CACHE_NAMESPACE:-${SECONDARY_REGISTRY_NAMESPACE:-${GITHUB_REPOSITORY_OWNER:-natindonesia}}}"
   printf '%s/%s/frappe-buildcache:%s' "$(lower "$reg")" "$(lower "$ns")" "${BUILD_CACHE_TAG:-main}"
+}
+
+# publish_all <local-image> <remote-repo:tag> -- push the EXACT tested local
+# image to every configured registry, then report failure if any attempt failed.
+# Each registry is attempted independently so an unavailable one (expired
+# credentials, deleted registry) cannot block the other from receiving the
+# image; the job still fails afterwards, so a broken registry stays visible.
+publish_all() {
+  local local_image="$1" remote="$2" failed=0
+  publish_primary "$local_image" "$remote" || failed=1
+  publish_secondary "$local_image" "$remote" || failed=1
+  return "$failed"
+}
+
+# primary_registry() -- print "<registry>/<namespace>" for the OPTIONAL primary
+# registry (e.g. registry.digitalocean.com), or nothing when REGISTRY_URL is
+# empty. Generic hook: the workflow decides the value.
+primary_registry() {
+  [ -n "${REGISTRY_URL:-}" ] || return 0
+  : "${REGISTRY_NAMESPACE:?REGISTRY_NAMESPACE required when REGISTRY_URL is set}"
+  printf '%s/%s' "$(lower "$REGISTRY_URL")" "$(lower "$REGISTRY_NAMESPACE")"
+}
+
+# require_registry() -- abort when neither registry is configured, so a
+# misconfiguration cannot silently publish nothing.
+require_registry() {
+  if [ -z "$(primary_registry)$(secondary_registry)" ]; then
+    echo "no registry configured: set REGISTRY_URL or SECONDARY_REGISTRY_URL" >&2
+    exit 1
+  fi
+}
+
+# publish_primary <local-image> <remote-repo:tag> -- push the EXACT tested local
+# image to the primary registry (docker tag + docker push, no rebuild). No-op
+# with a clear message when the primary registry is not configured.
+publish_primary() {
+  local local_image="$1" remote="$2" target
+  target="$(primary_registry)"
+  if [ -z "$target" ]; then
+    echo "Primary registry not configured — skipping ${remote}"
+    return 0
+  fi
+  echo "Publishing tested ${local_image} -> ${target}/${remote}"
+  docker tag "$local_image" "${target}/${remote}"
+  push_with_retry "${target}/${remote}"
 }
 
 # secondary_registry() -- print "<registry>/<namespace>" for the OPTIONAL second
