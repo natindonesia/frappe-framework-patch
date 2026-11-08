@@ -1,7 +1,8 @@
 # Weekly hygiene for the GHCR packages: delete package versions older than
 # CLEANUP_MAX_AGE_DAYS that the current release no longer references, keeping
 # everything the current tags (latest / base / latest-granian / buildcache:main)
-# resolve to plus their cosign signatures and attestations — regardless of age.
+# resolve to plus their cosign signatures and attestations — regardless of age —
+# and every immutable release tag (<version>, <version>-base, <version>-granian).
 # This removes the sha256-<digest> versions GHCR auto-lists for retired
 # signature/attestation manifests (the visible package-page noise).
 name: Cleanup GHCR package versions
@@ -44,10 +45,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Immutable release tags (<version>, <version>-base, <version>-granian) are
+      # permanent: they survive after the floating tags move to a newer release.
       - name: Prune frappe (latest, base, latest-granian protected)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+          KEEP_TAG_PATTERN: '^[0-9]+\.[0-9]+\.[0-9]+(-base|-granian)?$'
         run: |
           if [ "$DRY_RUN" = "1" ]; then
             bash scripts/ci/ghcr-cleanup.sh --dry-run \

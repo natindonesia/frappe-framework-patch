@@ -8,7 +8,10 @@
 # Publish promotes those exact tested images to every configured registry: the
 # optional primary (e.g. registry.digitalocean.com, only when REGISTRY_URL is
 # set) and the GitHub Container Registry. An unavailable registry never blocks
-# the other one; the job still fails so the breakage stays visible.
+# the other one; the job still fails so the breakage stays visible. Every run
+# publishes immutable tags derived from the pinned Frappe version
+# (<version>, <version>-base, <version>-granian); the floating latest / base /
+# latest-granian only move from the default branch.
 # Finally, the published GHCR digests are attested (SLSA provenance + SPDX SBOM),
 # keylessly signed, and independently verified with a hard-fail gate.
 name: Build & Test Docker and Granian Images
@@ -54,6 +57,11 @@ env:
   # when SECONDARY_REGISTRY_URL is empty.
   SECONDARY_REGISTRY_URL: ${{ vars.SECONDARY_REGISTRY_URL || 'ghcr.io' }}
   SECONDARY_REGISTRY_NAMESPACE: ${{ vars.SECONDARY_REGISTRY_NAMESPACE || github.repository_owner }}
+  # Every publish run emits immutable release tags derived from the pinned
+  # Frappe version (<version>, <version>-base, <version>-granian). Only the
+  # default branch may also advance the floating tags (latest / base /
+  # latest-granian), so re-publishing an older release never moves them.
+  PUBLISH_MOVING_TAGS: ${{ github.ref == 'refs/heads/main' && '1' || '0' }}
 
 concurrency:
   group: build-images-${{ github.repository }}-${{ github.ref }}
@@ -266,9 +274,11 @@ jobs:
   # STAGE 3: publish only after every matrix entry AND every security scan passes,
   # then verify digests.
   # The tested images are promoted byte-for-byte to every configured registry:
-  # GitHub Container Registry (always) plus the optional primary registry.
+  # GitHub Container Registry (always) plus the optional primary registry. Each
+  # variant is published under its immutable release tag; the floating tags are
+  # advanced only from the default branch.
   publish:
-    name: 'Publish latest/base/latest-granian and verify digests'
+    name: 'Publish release + moving tags and verify digests'
     needs: [variant-matrix, sast, trivy-source, trivy-images]
     if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true)
     outputs:
@@ -304,11 +314,11 @@ jobs:
           registry: ${{ env.SECONDARY_REGISTRY_URL }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish patched latest
+      - name: Publish patched image (latest + <version>)
         run: bash scripts/ci/publish-vanilla.sh
-      - name: Publish unpatched base
+      - name: Publish unpatched image (base + <version>-base)
         run: bash scripts/ci/publish-base.sh
-      - name: Publish Granian latest-granian
+      - name: Publish Granian image (latest-granian + <version>-granian)
         run: bash scripts/ci/publish-granian.sh
       - name: Verify published tags have distinct digests
         run: bash scripts/ci/publish-verify.sh

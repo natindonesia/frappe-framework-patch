@@ -316,6 +316,7 @@ ARG IMAGE_REVISION
 ARG IMAGE_SOURCE=https://github.com/natindonesia/frappe-framework-patch
 ARG IMAGE_CREATED
 ARG FRAPPE_SHA
+ARG FRAPPE_VERSION
 # Cache-busting for static assets: bundle filenames are unhashed (no
 # assets.json manifest), so asset URLs are versioned with the release image
 # instead of a content hash. Consumed by frappe.utils.get_build_version().
@@ -328,6 +329,7 @@ LABEL org.opencontainers.image.title="Frappe Framework backend (unpatched base)"
       org.opencontainers.image.created="${IMAGE_CREATED}" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       org.opencontainers.image.frappe-sha="${FRAPPE_SHA}" \
+      org.opencontainers.image.frappe-version="${FRAPPE_VERSION}" \
       org.opencontainers.image.variant=base \
       org.opencontainers.image.patches-applied=false
 VOLUME [ \
@@ -346,6 +348,7 @@ ARG IMAGE_REVISION
 ARG IMAGE_SOURCE=https://github.com/natindonesia/frappe-framework-patch
 ARG IMAGE_CREATED
 ARG FRAPPE_SHA
+ARG FRAPPE_VERSION
 # Cache-busting for static assets: bundle filenames are unhashed (no
 # assets.json manifest), so asset URLs are versioned with the release image
 # instead of a content hash. Consumed by frappe.utils.get_build_version().
@@ -358,6 +361,7 @@ LABEL org.opencontainers.image.title="Frappe Framework backend (patched)" \
       org.opencontainers.image.created="${IMAGE_CREATED}" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       org.opencontainers.image.frappe-sha="${FRAPPE_SHA}" \
+      org.opencontainers.image.frappe-version="${FRAPPE_VERSION}" \
       org.opencontainers.image.variant=latest \
       org.opencontainers.image.patches-applied=true
 WORKDIR /home/frappe/frappe-bench
