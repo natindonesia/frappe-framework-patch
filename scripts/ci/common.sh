@@ -147,6 +147,24 @@ build_cache_ref() {
   printf '%s/%s/frappe-buildcache:%s' "$(lower "$reg")" "$(lower "$ns")" "${BUILD_CACHE_TAG:-main}"
 }
 
+# imagetools_digest <registry-ref> -- print the manifest digest of an image in a
+# registry, retrying transient failures (GHCR can fail the first inspect right
+# after a push, and an empty answer would otherwise abort the verification).
+# Override attempts via DIGEST_MAX_ATTEMPTS.
+imagetools_digest() {
+  local ref="$1" attempt max="${DIGEST_MAX_ATTEMPTS:-5}" digest=""
+  for ((attempt = 1; attempt <= max; attempt++)); do
+    digest="$(docker buildx imagetools inspect "$ref" 2>/dev/null | awk '/^Digest:/ {print $2; exit}')" || true
+    if [ -n "$digest" ]; then
+      printf '%s' "$digest"
+      return 0
+    fi
+    echo "imagetools inspect ${ref} failed (attempt ${attempt}/${max})" >&2
+    [ "$attempt" -lt "$max" ] || return 1
+    sleep $((attempt * 3))
+  done
+}
+
 # publish_all <local-image> <remote-repo:tag> -- push the EXACT tested local
 # image to every configured registry, then report failure if any attempt failed.
 # Each registry is attempted independently so an unavailable one (expired

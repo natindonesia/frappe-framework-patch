@@ -18,15 +18,11 @@ if [ "${PUBLISH_MOVING_TAGS:-1}" != "1" ]; then
   frappe_release_version_for_run >/dev/null
 fi
 
-digest_of() {
-  docker buildx imagetools inspect "$1" | awk '/^Digest:/ {print $2; exit}'
-}
-
 json=""
 for variant in base latest latest-granian; do
   tag="$(published_tag "$variant")"
   ref="${SECONDARY}/frappe:${tag}"
-  digest="$(digest_of "$ref")"
+  digest="$(imagetools_digest "$ref")"
   [ -n "$digest" ] || { echo "empty digest for ${ref}" >&2; exit 1; }
   echo "${variant} -> ${ref}@${digest}"
   json+="\"${variant}\":\"${digest}\","
