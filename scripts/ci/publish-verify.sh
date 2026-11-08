@@ -21,10 +21,6 @@ SECONDARY="$(secondary_registry)"
 FRAPPE_VERSION="$(frappe_release_version_for_run)"
 PUBLISH_MOVING_TAGS="${PUBLISH_MOVING_TAGS:-1}"
 
-imagetools_digest() {
-  docker buildx imagetools inspect "$1" | awk '/^Digest:/ {print $2; exit}'
-}
-
 # digest_set <registry> <label> <base-tag> <latest-tag> <granian-tag>
 # Sets VERIFIED_BASE / VERIFIED_LATEST / VERIFIED_GRANIAN.
 digest_set() {
