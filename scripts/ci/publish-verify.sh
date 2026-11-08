@@ -4,15 +4,15 @@
 #   - frappe:base           (unpatched reference image)
 #   - frappe:latest         (patched production image)
 #   - frappe:latest-granian (Granian layered on patched latest)
-# When a secondary registry (ghcr.io) is configured, each tag must resolve to the
-# SAME digest there as in the primary registry — proof it was actually published.
+# When two registries are configured, each tag must resolve to the SAME digest
+# in both — proof the same tested image was actually published twice.
 set -euo pipefail
 # shellcheck source=scripts/ci/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-: "${REGISTRY_URL:?REGISTRY_URL required}"
-: "${REGISTRY_NAMESPACE:?REGISTRY_NAMESPACE required}"
-REGISTRY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}"
+require_registry
+PRIMARY="$(primary_registry)"
+SECONDARY="$(secondary_registry)"
 
 imagetools_digest() {
   docker buildx imagetools inspect "$1" | awk '/^Digest:/ {print $2; exit}'
@@ -35,17 +35,25 @@ verify_registry() {
   VERIFIED_BASE="$b"; VERIFIED_LATEST="$v"; VERIFIED_GRANIAN="$g"
 }
 
-verify_registry "$REGISTRY" primary
-P_BASE="$VERIFIED_BASE"; P_LATEST="$VERIFIED_LATEST"; P_GRANIAN="$VERIFIED_GRANIAN"
+P_BASE=""; P_LATEST=""; P_GRANIAN=""
+if [ -n "$PRIMARY" ]; then
+  verify_registry "$PRIMARY" primary
+  P_BASE="$VERIFIED_BASE"; P_LATEST="$VERIFIED_LATEST"; P_GRANIAN="$VERIFIED_GRANIAN"
+else
+  echo "Primary registry not configured — verifying the secondary only"
+fi
 
-SECONDARY="$(secondary_registry)"
 if [ -n "$SECONDARY" ]; then
   verify_registry "$SECONDARY" secondary
-  [ "$VERIFIED_BASE" = "$P_BASE" ] || { echo "  secondary :base digest differs from primary — not the same tested image"; exit 1; }
-  [ "$VERIFIED_LATEST" = "$P_LATEST" ] || { echo "  secondary :latest digest differs from primary — not the same tested image"; exit 1; }
-  [ "$VERIFIED_GRANIAN" = "$P_GRANIAN" ] || { echo "  secondary :latest-granian digest differs from primary — not the same tested image"; exit 1; }
-  echo "OK: ${REGISTRY} and ${SECONDARY} hold the same three distinct images"
+  if [ -n "$PRIMARY" ]; then
+    [ "$VERIFIED_BASE" = "$P_BASE" ] || { echo "  secondary :base digest differs from primary — not the same tested image"; exit 1; }
+    [ "$VERIFIED_LATEST" = "$P_LATEST" ] || { echo "  secondary :latest digest differs from primary — not the same tested image"; exit 1; }
+    [ "$VERIFIED_GRANIAN" = "$P_GRANIAN" ] || { echo "  secondary :latest-granian digest differs from primary — not the same tested image"; exit 1; }
+    echo "OK: ${PRIMARY} and ${SECONDARY} hold the same three distinct images"
+  else
+    echo "OK: ${SECONDARY} holds three distinct images"
+  fi
 else
-  echo "Secondary registry not configured — verified ${REGISTRY} only"
+  echo "Secondary registry not configured — verified ${PRIMARY} only"
 fi
 echo "OK: base, latest, and latest-granian are three distinct published images"

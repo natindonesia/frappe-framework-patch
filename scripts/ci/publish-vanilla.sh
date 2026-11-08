@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# Promote the EXACT tested local vanilla image to the registry as :latest.
-# `docker tag` + `docker push` — NO second build, NO registry re-assembly.
+# Promote the EXACT tested local vanilla image to the configured registries as
+# :latest. `docker tag` + `docker push` — NO second build, NO registry
+# re-assembly. Every configured registry is attempted independently, so an
+# unavailable primary does not block the secondary.
 set -euo pipefail
 # shellcheck source=scripts/ci/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-: "${REGISTRY_URL:?REGISTRY_URL required}"
-: "${REGISTRY_NAMESPACE:?REGISTRY_NAMESPACE required}"
-REGISTRY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}"
-echo "Publishing tested vanilla -> ${REGISTRY}/frappe:latest"
-docker tag frappe:latest "${REGISTRY}/frappe:latest"
-push_with_retry "${REGISTRY}/frappe:latest"
-# Optional second registry (GitHub Container Registry) — same tested image.
-publish_secondary frappe:latest frappe:latest
+require_registry
+echo "Publishing tested vanilla image"
+publish_all frappe:latest frappe:latest
