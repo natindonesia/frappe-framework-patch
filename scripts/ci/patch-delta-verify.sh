@@ -72,6 +72,18 @@ check frappe:latest no  frappe/public/js/frappe/ui/sidebar/sidebar.js "Switch to
 check frappe:base   no  node_utils.js "FRAPPE_BACKEND_URL" 0006-realtime-backend-url-and-origin-handling.patch
 check frappe:latest yes node_utils.js "FRAPPE_BACKEND_URL" 0006-realtime-backend-url-and-origin-handling.patch
 
+# 0007-drop-assets-json-manifest.patch
+check frappe:base   yes esbuild/esbuild.js "get_assets_json_path_and_obj" 0007-drop-assets-json-manifest.patch
+check frappe:latest no  esbuild/esbuild.js "get_assets_json_path_and_obj" 0007-drop-assets-json-manifest.patch
+
+# 0008-api-key-auth-caching-with-revocation.patch
+check frappe:base   no  frappe/auth.py "api_auth_cache:" 0008-api-key-auth-caching-with-revocation.patch
+check frappe:latest yes frappe/auth.py "api_auth_cache:" 0008-api-key-auth-caching-with-revocation.patch
+
+# 0009-worker-persistent-db-connection.patch
+check frappe:base   no  frappe/utils/background_jobs.py "_WORKER_CONNECTION_CACHE" 0009-worker-persistent-db-connection.patch
+check frappe:latest yes frappe/utils/background_jobs.py "_WORKER_CONNECTION_CACHE" 0009-worker-persistent-db-connection.patch
+
 # Guard against empty-marker accidents: every removal marker MUST really exist
 # in the pristine base (checked above via "yes") and every added marker MUST
 # really exist in latest (checked via "yes"); nothing else to do here.

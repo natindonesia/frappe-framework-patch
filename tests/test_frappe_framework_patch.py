@@ -90,6 +90,24 @@ PATCH_MARKERS = [
         "FRAPPE_BACKEND_URL",
         "added",
     ),
+    (
+        "0007-drop-assets-json-manifest.patch",
+        "esbuild/esbuild.js",
+        "get_assets_json_path_and_obj",
+        "removed",
+    ),
+    (
+        "0008-api-key-auth-caching-with-revocation.patch",
+        "frappe/auth.py",
+        "api_auth_cache:",
+        "added",
+    ),
+    (
+        "0009-worker-persistent-db-connection.patch",
+        "frappe/utils/background_jobs.py",
+        "_WORKER_CONNECTION_CACHE",
+        "added",
+    ),
 ]
 
 
