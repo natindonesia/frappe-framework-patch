@@ -74,6 +74,9 @@ spec:
               name: metrics
             {{- end }}
           startupProbe:
+            {{- if .Values.web.startupProbe }}
+            {{- toYaml .Values.web.startupProbe | nindent 12 }}
+            {{- else }}
             httpGet:
               path: /api/method/ping
               port: {{ .Values.web.servicePort }}
@@ -81,22 +84,27 @@ spec:
                 - name: Host
                   value: {{ include "frappe-bench.primaryHost" . }}
             periodSeconds: 1
-            timeoutSeconds: 1
+            timeoutSeconds: 5
             failureThreshold: 30
+            {{- end }}
           lifecycle:
             preStop:
               exec:
                 command: ["/bin/sleep", "5"]
           readinessProbe:
+            {{- if .Values.web.readinessProbe }}
+            {{- toYaml .Values.web.readinessProbe | nindent 12 }}
+            {{- else }}
             httpGet:
               path: /api/method/ping
               port: {{ .Values.web.servicePort }}
               httpHeaders:
                 - name: Host
                   value: {{ include "frappe-bench.primaryHost" . }}
-            periodSeconds: 2
-            timeoutSeconds: 1
-            failureThreshold: 2
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+            {{- end }}
           volumeMounts:
             - name: sites-data
               mountPath: /home/frappe/frappe-bench/sites

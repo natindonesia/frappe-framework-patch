@@ -78,6 +78,13 @@ backend:
 # external/operator-managed cache instead.
 redis:
   enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
 
 # Local OTLP relay: forwards traces/metrics/logs to the in-cluster otel-gateway.
 otel:
@@ -124,6 +131,11 @@ networkPolicy:
     port: 2525
     cidr: 0.0.0.0/0
 
+# Node placement defaults applied to all bench workloads (web, workers, nginx, redis, etc.)
+nodeSelector: {}
+affinity: {}
+tolerations: []
+
 # Per-process tuning.
 web:
   replicas: 2
@@ -140,6 +152,14 @@ web:
     limits:
       memory: 2Gi
   otelFrappeDbStatements: "0"
+  startupProbe:
+    periodSeconds: 1
+    timeoutSeconds: 5
+    failureThreshold: 30
+  readinessProbe:
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 6
 
 socketio:
   replicas: 1
@@ -201,7 +221,7 @@ nginx:
     limits:
       memory: 256Mi
   # Request timeout on the non-socket.io route.
-  requestTimeout: 60s
+  requestTimeout: 120s
 
 # Optional MariaDB operator cluster deployment (CR).
 mariadb:
@@ -214,7 +234,7 @@ mariadb:
 
 # Global common_site_config.json configuration applied during migrate job
 commonSiteConfig:
-  max_queued_jobs: 10000
+  max_queued_jobs: 50000
 
 # Default outgoing mail for every site in the bench.
 #

@@ -24,10 +24,22 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
 {{- end -}}
 
-{{/* Common pod-level fields: image pull secrets + ServiceAccount default. */}}
+{{/* Common pod-level fields: image pull secrets + ServiceAccount default + node placement. */}}
 {{- define "frappe-bench.podDefaults" -}}
 {{- with .Values.imagePullSecrets }}
 imagePullSecrets:
+{{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.nodeSelector }}
+nodeSelector:
+{{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.affinity }}
+affinity:
+{{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.tolerations }}
+tolerations:
 {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end -}}
