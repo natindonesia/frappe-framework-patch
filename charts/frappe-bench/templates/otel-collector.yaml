@@ -125,6 +125,11 @@ spec:
           image: {{ include "frappe-bench.imageRef" (.Values.images.rotel | default (dict "repository" "streamfold/rotel" "tag" "latest" "digest" "sha256:7a12878dae3dc494c27def53ebcccbdc18e13389ececf33abf116af3a07c3427" "pullPolicy" "IfNotPresent")) }}
           imagePullPolicy: {{ (.Values.images.rotel).pullPolicy | default "IfNotPresent" }}
           env:
+            - name: OTEL_WRITER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.writerTokenSecret.name }}
+                  key: {{ .Values.otel.writerTokenSecret.key }}
             - name: ROTEL_EXPORTER
               value: "otlp"
             - name: ROTEL_OTLP_EXPORTER_ENDPOINT
@@ -135,11 +140,6 @@ spec:
               value: "Authorization=Bearer $(OTEL_WRITER_TOKEN)"
             - name: ROTEL_OTEL_RESOURCE_ATTRIBUTES
               value: {{ printf "service.namespace=%s,deployment.environment=%s,host.name=%s,server.region=%s" (include "frappe-bench.otelNamespace" .) (include "frappe-bench.otelEnvironment" .) .Values.otel.hostName .Values.otel.serverRegion | quote }}
-            - name: OTEL_WRITER_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.otel.writerTokenSecret.name }}
-                  key: {{ .Values.otel.writerTokenSecret.key }}
           resources:
             {{- toYaml (.Values.otel.resources | default (dict "requests" (dict "cpu" "100m" "memory" "64Mi") "limits" (dict "cpu" "2" "memory" "256Mi"))) | nindent 12 }}
           readinessProbe:
