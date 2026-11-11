@@ -46,6 +46,11 @@ images:
   otelCollector:
     repository: otel/opentelemetry-collector-contrib
     tag: 0.161.0
+  rotel:
+    repository: streamfold/rotel
+    tag: latest
+    digest: sha256:7a12878dae3dc494c27def53ebcccbdc18e13389ececf33abf116af3a07c3427
+    pullPolicy: IfNotPresent
 
 # Sites served by this bench. Each gets an HTTPRoute on the shared Gateway.
 # `name` is the site directory (hostname) and the Host the probes send.
@@ -89,6 +94,14 @@ redis:
 # Local OTLP relay: forwards traces/metrics/logs to the in-cluster otel-gateway.
 otel:
   enabled: true
+  engine: otelcol # Collector engine: "otelcol" (Go OTel Contrib) or "rotel" (Rust-native OTel)
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
   # Central gateway OTLP/HTTP endpoint.
   gatewayEndpoint: http://otel-gateway.observability.svc.cluster.local:4318
   # Secret (created out-of-band, never in Git) holding the writer bearer token.

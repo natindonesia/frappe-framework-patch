@@ -1,4 +1,6 @@
 {{- if .Values.otel.enabled }}
+{{- $isRotel := eq (.Values.otel.engine | default "otelcol") "rotel" }}
+{{- if not $isRotel }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,8 +21,8 @@ data:
     processors:
       memory_limiter:
         check_interval: 2s
-        limit_mib: 400
-        spike_limit_mib: 100
+        limit_mib: {{ dig "memoryLimiter" "limitMib" 400 .Values.otel }}
+        spike_limit_mib: {{ dig "memoryLimiter" "spikeLimitMib" 100 .Values.otel }}
       batch:
         timeout: 1s
         send_batch_size: 2048
@@ -78,6 +80,7 @@ data:
           processors: [memory_limiter, resource/stack, attributes/scrub, batch]
           exporters: [otlphttp/central]
 ---
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -118,24 +121,50 @@ spec:
       {{- include "frappe-bench.podDefaults" . | nindent 6 }}
       containers:
         - name: otel-collector
-          image: {{ include "frappe-bench.imageRef" .Values.images.otelCollector }}
-          imagePullPolicy: IfNotPresent
-          args: ["--config=/etc/otelcol/config.yaml"]
+          {{- if $isRotel }}
+          image: {{ include "frappe-bench.imageRef" (.Values.images.rotel | default (dict "repository" "streamfold/rotel" "tag" "latest" "digest" "sha256:7a12878dae3dc494c27def53ebcccbdc18e13389ececf33abf116af3a07c3427" "pullPolicy" "IfNotPresent")) }}
+          imagePullPolicy: {{ (.Values.images.rotel).pullPolicy | default "IfNotPresent" }}
           env:
-            - name: GOMEMLIMIT
-              value: "300MiB"
+            - name: ROTEL_EXPORTER
+              value: "otlp"
+            - name: ROTEL_OTLP_EXPORTER_ENDPOINT
+              value: {{ .Values.otel.gatewayEndpoint | quote }}
+            - name: ROTEL_OTLP_EXPORTER_PROTOCOL
+              value: "http"
+            - name: ROTEL_OTLP_EXPORTER_CUSTOM_HEADERS
+              value: "Authorization=Bearer $(OTEL_WRITER_TOKEN)"
+            - name: ROTEL_OTEL_RESOURCE_ATTRIBUTES
+              value: {{ printf "service.namespace=%s,deployment.environment=%s,host.name=%s,server.region=%s" (include "frappe-bench.otelNamespace" .) (include "frappe-bench.otelEnvironment" .) .Values.otel.hostName .Values.otel.serverRegion | quote }}
             - name: OTEL_WRITER_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.otel.writerTokenSecret.name }}
                   key: {{ .Values.otel.writerTokenSecret.key }}
           resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              cpu: "1"
-              memory: 512Mi
+            {{- toYaml (.Values.otel.resources | default (dict "requests" (dict "cpu" "100m" "memory" "64Mi") "limits" (dict "cpu" "2" "memory" "256Mi"))) | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: 4318
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 4318
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          {{- else }}
+          image: {{ include "frappe-bench.imageRef" .Values.images.otelCollector }}
+          imagePullPolicy: IfNotPresent
+          args: ["--config=/etc/otelcol/config.yaml"]
+          env:
+            - name: GOMEMLIMIT
+              value: {{ .Values.otel.gomemlimit | default "300MiB" | quote }}
+            - name: OTEL_WRITER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.writerTokenSecret.name }}
+                  key: {{ .Values.otel.writerTokenSecret.key }}
+          resources:
+            {{- toYaml (.Values.otel.resources | default (dict "requests" (dict "cpu" "100m" "memory" "128Mi") "limits" (dict "cpu" "1" "memory" "512Mi"))) | nindent 12 }}
           readinessProbe:
             httpGet:
               path: /
@@ -150,8 +179,11 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/otelcol
+          {{- end }}
+      {{- if not $isRotel }}
       volumes:
         - name: config
           configMap:
             name: otel-collector-config
+      {{- end }}
 {{- end }}
