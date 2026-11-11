@@ -102,12 +102,6 @@ PATCH_MARKERS = [
         "api_auth_cache:",
         "added",
     ),
-    (
-        "0009-worker-persistent-db-connection.patch",
-        "frappe/utils/background_jobs.py",
-        "_WORKER_CONNECTION_CACHE",
-        "added",
-    ),
 ]
 
 

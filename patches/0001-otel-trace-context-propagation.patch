@@ -1,9 +1,9 @@
 diff --git a/frappe/integrations/trace_context.py b/frappe/integrations/trace_context.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8f0e139f0bbcf214787d60d80b591a3f88972b05
+index 0000000000..a83b4762e1
 --- /dev/null
 +++ b/frappe/integrations/trace_context.py
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,56 @@
 +"""W3C trace-context propagation (OTel-optional) for Frappe RQ background jobs..."""
 +
 +import os
@@ -46,7 +46,6 @@ index 0000000000000000000000000000000000000000..8f0e139f0bbcf214787d60d80b591a3f
 +        from opentelemetry.context import attach, get_current
 +        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 +
-+
 +        ctx = TraceContextTextMapPropagator().extract(carrier=carrier, context=get_current())
 +        return attach(ctx)
 +    except Exception:
@@ -61,9 +60,8 @@ index 0000000000000000000000000000000000000000..8f0e139f0bbcf214787d60d80b591a3f
 +        detach(token)
 +    except Exception:
 +        return
-\ No newline at end of file
 diff --git a/frappe/utils/background_jobs.py b/frappe/utils/background_jobs.py
-index a5f5b206d64d71a79dfb4ce81d899fe219299196..992762bcc7f830de661d94941658e865155ddde0 100644
+index 0fe2d769b2..954babed57 100644
 --- a/frappe/utils/background_jobs.py
 +++ b/frappe/utils/background_jobs.py
 @@ -27,6 +27,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fi
@@ -74,28 +72,92 @@ index a5f5b206d64d71a79dfb4ce81d899fe219299196..992762bcc7f830de661d94941658e865
  from frappe.utils import CallbackManager, cint, get_bench_id, get_sites
  from frappe.utils.caching import site_cache
  from frappe.utils.commands import log
-@@ -184,6 +185,8 @@ def enqueue(
+@@ -182,6 +183,7 @@ def enqueue(
+ 		"job_name": job_name or method_name,
+ 		"is_async": is_async,
  		"kwargs": kwargs,
++		"_trace_context": get_trace_context(),
  	}
  
-+	queue_args["_trace_context"] = get_trace_context()
-+
  	on_failure = on_failure or truncate_failed_registry
- 
- 	if at_front_when_starved and q.count > QUEUE_STARVATION_THRESHOLD:
-@@ -236,9 +239,10 @@ def run_doc_method(doctype, name, doc_method, **kwargs):
+@@ -236,13 +238,73 @@ def run_doc_method(doctype, name, doc_method, **kwargs):
  	getattr(frappe.get_doc(doctype, name), doc_method)(**kwargs)
  
  
 -def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True, retry=0):
++_WORKER_CONNECTION_CACHE = {}  # site -> db_instance
++
++
++def _get_worker_db(site: str):
++	"""Reuse persistent DB connection for workers when running in no-fork mode."""
++	if not os.environ.get("FRAPPE_BACKGROUND_WORKERS_NOFORK"):
++		frappe.init(site, force=True, is_job=True)
++		frappe.connect()
++		return
++
++	cached_db = _WORKER_CONNECTION_CACHE.get(site)
++	if cached_db is not None:
++		try:
++			if hasattr(cached_db, "_conn") and cached_db._conn:
++				cached_db._conn.ping(reconnect=True)
++				frappe.init(site, force=True, is_job=True)
++				frappe.local.db = cached_db
++				return
++		except Exception:
++			try:
++				cached_db.close()
++			except Exception:
++				pass
++			_WORKER_CONNECTION_CACHE.pop(site, None)
++
++	# Close any other cached connections if switching sites to avoid connection bloat
++	for other_site, other_db in list(_WORKER_CONNECTION_CACHE.items()):
++		if other_site != site:
++			try:
++				other_db.close()
++			except Exception:
++				pass
++			_WORKER_CONNECTION_CACHE.pop(other_site, None)
++
++	frappe.init(site, force=True, is_job=True)
++	frappe.connect()
++	_WORKER_CONNECTION_CACHE[site] = frappe.local.db
++
++
++def _teardown_worker_job(site: str):
++	"""Teardown worker job: reset transaction, flush locals, and preserve DB if in nofork mode."""
++	if not os.environ.get("FRAPPE_BACKGROUND_WORKERS_NOFORK"):
++		frappe.destroy()
++		return
++
++	db = getattr(frappe.local, "db", None)
++	if db is not None:
++		try:
++			db.rollback()
++			_WORKER_CONNECTION_CACHE[site] = db
++		except Exception:
++			try:
++				db.close()
++			except Exception:
++				pass
++			_WORKER_CONNECTION_CACHE.pop(site, None)
++
++	frappe.release_local(frappe.local)
++
++
 +def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True, retry=0, _trace_context: dict | None = None):
  	"""Executes job in a worker, performs commit/rollback and logs if there is any error"""
  	retval = None
 +	attach_token = None
  
  	if is_async:
- 		frappe.init(site, force=True, is_job=True)
-@@ -266,6 +270,8 @@ def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True,
+-		frappe.init(site, force=True, is_job=True)
+-		frappe.connect()
++		_get_worker_db(site)
+ 		if os.environ.get("CI"):
+ 			from frappe.tests.utils import toggle_test_mode
+ 
+@@ -266,6 +328,8 @@ def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True,
  		after_job=CallbackManager(),
  	)
  
@@ -104,7 +166,11 @@ index a5f5b206d64d71a79dfb4ce81d899fe219299196..992762bcc7f830de661d94941658e865
  	for before_job_task in frappe.get_hooks("before_job"):
  		frappe.call(before_job_task, method=method_name, kwargs=kwargs, transaction_type="job")
  
-@@ -287,7 +293,7 @@ def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True,
+@@ -284,10 +348,11 @@ def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True,
+ 			# 1205 = lock wait timeout
+ 			# or RetryBackgroundJobError is explicitly raised
+ 			frappe.job.after_job.reset()
++			_WORKER_CONNECTION_CACHE.pop(site, None)
  			frappe.destroy()
  			time.sleep(retry + 1)
  
@@ -113,11 +179,22 @@ index a5f5b206d64d71a79dfb4ce81d899fe219299196..992762bcc7f830de661d94941658e865
  
  		else:
  			frappe.log_error(title=method_name)
-@@ -306,6 +312,7 @@ def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True,
+@@ -306,15 +371,15 @@ def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True,
  		return retval
  
  	finally:
 +		detach_trace_context(attach_token)
  		if not hasattr(frappe.local, "site"):
- 			frappe.init(site, force=True, is_job=True)
- 			frappe.connect()
+-			frappe.init(site, force=True, is_job=True)
+-			frappe.connect()
++			_get_worker_db(site)
+ 		for after_job_task in frappe.get_hooks("after_job"):
+ 			frappe.call(after_job_task, method=method_name, kwargs=kwargs, result=retval)
+ 		frappe.local.job.after_job.run()
+ 
+ 		if is_async:
+-			frappe.destroy()
++			_teardown_worker_job(site)
+ 
+ 
+ def start_worker(
