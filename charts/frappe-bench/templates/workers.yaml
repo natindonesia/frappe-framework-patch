@@ -19,6 +19,7 @@ spec:
       annotations:
         checksum/site-config: {{ include "frappe-bench.configChecksum" $ | quote }}
     spec:
+      terminationGracePeriodSeconds: {{ $w.terminationGracePeriodSeconds | default 60 }}
       {{- include "frappe-bench.podDefaults" $ | nindent 6 }}
       containers:
         - name: worker
@@ -30,7 +31,19 @@ spec:
             {{- toYaml $w.resources | nindent 12 }}
           command: ["/bin/bash", "-c"]
           args:
+            {{- if $w.args }}
             {{- toYaml $w.args | nindent 12 }}
+            {{- else if or $w.workerPool $w.numWorkers }}
+            - >-
+              cd /home/frappe/frappe-bench/sites && . ../env/bin/activate && exec python -c
+              "from frappe.otel import boot; boot(); import runpy, sys; sys.argv=[\"bench\", \"frappe\", \"worker-pool\", \"--num-workers\", \"{{ $w.numWorkers | default 2 }}\"{{ if $w.queue }}, \"--queue\", \"{{ $w.queue }}\"{{ end }}];
+              runpy.run_module(\"frappe.utils.bench_helper\", run_name=\"__main__\")"
+            {{- else }}
+            - >-
+              cd /home/frappe/frappe-bench/sites && . ../env/bin/activate && exec python -c
+              "from frappe.otel import boot; boot(); import runpy, sys; sys.argv=[\"bench\", \"frappe\", \"worker\"{{ if $w.queue }}, \"--queue\", \"{{ $w.queue }}\"{{ end }}];
+              runpy.run_module(\"frappe.utils.bench_helper\", run_name=\"__main__\")"
+            {{- end }}
           env:
             - name: PYTHONPATH
               value: {{ include "frappe-bench.pythonPath" $ | quote }}
@@ -40,6 +53,13 @@ spec:
               value: {{ if eq $name "default" }}{{ printf "%s-worker" (include "frappe-bench.canonicalName" $) | quote }}{{ else }}{{ printf "%s-worker-%s" (include "frappe-bench.canonicalName" $) $name | quote }}{{ end }}
             - name: OTEL_FRAPPE_DB_STATEMENTS
               value: "0"
+            {{- if or $w.nofork (and (or $w.workerPool $w.numWorkers) (ne $w.nofork false)) }}
+            - name: FRAPPE_BACKGROUND_WORKERS_NOFORK
+              value: "1"
+            {{- end }}
+            {{- with $w.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           volumeMounts:
             - name: sites-data
               mountPath: /home/frappe/frappe-bench/sites

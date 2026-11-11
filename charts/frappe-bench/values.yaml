@@ -185,11 +185,9 @@ socketio:
 workers:
   default:
     replicas: 1
-    args:
-      - >-
-        cd /home/frappe/frappe-bench/sites && . ../env/bin/activate && exec python -c
-        "from frappe.otel import boot; boot(); import runpy, sys; sys.argv=[\"bench\", \"frappe\", \"worker\"];
-        runpy.run_module(\"frappe.utils.bench_helper\", run_name=\"__main__\")"
+    workerPool: true
+    numWorkers: 2
+    nofork: true
     resources:
       requests:
         cpu: 100m
