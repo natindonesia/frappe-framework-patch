@@ -74,7 +74,7 @@ spec:
               name: metrics
             {{- end }}
           startupProbe:
-            {{- if .Values.web.startupProbe }}
+            {{- if and .Values.web.startupProbe (or .Values.web.startupProbe.httpGet .Values.web.startupProbe.tcpSocket .Values.web.startupProbe.exec) }}
             {{- toYaml .Values.web.startupProbe | nindent 12 }}
             {{- else }}
             httpGet:
@@ -83,16 +83,16 @@ spec:
               httpHeaders:
                 - name: Host
                   value: {{ include "frappe-bench.primaryHost" . }}
-            periodSeconds: 1
-            timeoutSeconds: 5
-            failureThreshold: 30
+            periodSeconds: {{ default 1 (and .Values.web.startupProbe .Values.web.startupProbe.periodSeconds) }}
+            timeoutSeconds: {{ default 5 (and .Values.web.startupProbe .Values.web.startupProbe.timeoutSeconds) }}
+            failureThreshold: {{ default 30 (and .Values.web.startupProbe .Values.web.startupProbe.failureThreshold) }}
             {{- end }}
           lifecycle:
             preStop:
               exec:
                 command: ["/bin/sleep", "5"]
           readinessProbe:
-            {{- if .Values.web.readinessProbe }}
+            {{- if and .Values.web.readinessProbe (or .Values.web.readinessProbe.httpGet .Values.web.readinessProbe.tcpSocket .Values.web.readinessProbe.exec) }}
             {{- toYaml .Values.web.readinessProbe | nindent 12 }}
             {{- else }}
             httpGet:
@@ -101,9 +101,9 @@ spec:
               httpHeaders:
                 - name: Host
                   value: {{ include "frappe-bench.primaryHost" . }}
-            periodSeconds: 5
-            timeoutSeconds: 5
-            failureThreshold: 6
+            periodSeconds: {{ default 5 (and .Values.web.readinessProbe .Values.web.readinessProbe.periodSeconds) }}
+            timeoutSeconds: {{ default 5 (and .Values.web.readinessProbe .Values.web.readinessProbe.timeoutSeconds) }}
+            failureThreshold: {{ default 6 (and .Values.web.readinessProbe .Values.web.readinessProbe.failureThreshold) }}
             {{- end }}
           volumeMounts:
             - name: sites-data
