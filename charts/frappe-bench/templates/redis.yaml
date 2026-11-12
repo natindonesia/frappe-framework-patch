@@ -41,6 +41,10 @@ spec:
             allowPrivilegeEscalation: false
           resources:
             {{- toYaml .Values.redis.resources | nindent 12 }}
+          {{- with .Values.redis.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - containerPort: {{ .Values.backend.redis.port }}
               name: redis
