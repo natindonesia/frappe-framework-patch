@@ -379,6 +379,12 @@ autoscaling:
       pollingInterval: 5
       cooldownPeriod: 60
       triggers:
+        queueLatency:
+          enabled: false
+          targetSeconds: 5
+        workerSaturation:
+          enabled: false
+          targetValue: 4
         redisQueue:
           enabled: true
           benchKey: "home-frappe-frappe-bench"

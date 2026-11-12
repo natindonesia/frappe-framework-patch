@@ -17,6 +17,7 @@ data:
     import threading
     import socket
     from collections import deque
+    from datetime import datetime
 
     state = {
         "blocking_queue": 0.0,
@@ -33,10 +34,13 @@ data:
         "queue_long": 0,
         "queue_short": 0,
         "queue_total": 0,
+        "max_queue_latency_sec": 0.0,
+        "saturation_deficit": 0,
         "failed_jobs": 0,
         "workers_total": 0,
         "workers_busy": 0,
         "workers_idle": 0,
+        "workers_busy_ratio": 0.0,
         "last_updated": 0.0
     }
 
@@ -92,75 +96,103 @@ data:
     def poll_redis():
         global redis_state
         bench_key = "{{ default "home-frappe-frappe-bench" .Values.autoscaling.adapter.benchKey }}"
+        queues = ["default", "long", "short"]
         while True:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.settimeout(1.5)
                 s.connect(("{{ .Values.backend.redis.host }}", {{ .Values.backend.redis.port }}))
+                f = s.makefile("rb")
 
-                cmds = [
-                    f"LLEN rq:queue:{bench_key}:default",
-                    f"LLEN rq:queue:{bench_key}:long",
-                    f"LLEN rq:queue:{bench_key}:short",
-                    f"ZCARD rq:failed:{bench_key}:default",
-                    "SMEMBERS rq:workers"
-                ]
-                payload = ""
-                for cmd in cmds:
-                    parts = cmd.split()
-                    payload += f"*{len(parts)}\r\n"
+                def send_cmd(*parts):
+                    payload = f"*{len(parts)}\r\n"
                     for p in parts:
-                        payload += f"${len(p)}\r\n{p}\r\n"
-                s.sendall(payload.encode("utf-8"))
+                        payload += f"${len(str(p))}\r\n{p}\r\n"
+                    s.sendall(payload.encode("utf-8"))
 
-                data = b""
-                while True:
-                    chunk = s.recv(4096)
-                    data += chunk
-                    if len(chunk) < 4096:
-                        break
+                def parse_resp():
+                    line = f.readline()
+                    if not line:
+                        return None
+                    line = line.rstrip(b"\r\n")
+                    prefix = line[:1]
+                    if prefix == b":":
+                        return int(line[1:])
+                    elif prefix in (b"+", b"-"):
+                        return line[1:].decode("utf-8", errors="ignore")
+                    elif prefix == b"$":
+                        length = int(line[1:])
+                        if length == -1:
+                            return None
+                        val = f.read(length)
+                        f.read(2)
+                        return val.decode("utf-8", errors="ignore")
+                    elif prefix == b"*":
+                        count = int(line[1:])
+                        if count == -1:
+                            return None
+                        return [parse_resp() for _ in range(count)]
+                    return None
 
-                text = data.decode("utf-8", errors="ignore")
-                lines = text.split("\r\n")
+                # 1. Pipeline queue lengths, oldest job IDs, failed count, workers set
+                for q in queues:
+                    send_cmd("LLEN", f"rq:queue:{bench_key}:{q}")
+                for q in queues:
+                    send_cmd("LINDEX", f"rq:queue:{bench_key}:{q}", 0)
+                send_cmd("ZCARD", f"rq:failed:{bench_key}:default")
+                send_cmd("SMEMBERS", "rq:workers")
 
-                int_vals = []
-                worker_keys = []
-                for l in lines:
-                    if l.startswith(":") and len(int_vals) < 4:
-                        int_vals.append(int(l[1:]))
-                    elif l.startswith("rq:worker:"):
-                        worker_keys.append(l)
+                q_lens = [parse_resp() or 0 for _ in queues]
+                q_heads = [parse_resp() for _ in queues]
+                failed = parse_resp() or 0
+                workers = parse_resp() or []
 
-                q_def = int_vals[0] if len(int_vals) > 0 else 0
-                q_long = int_vals[1] if len(int_vals) > 1 else 0
-                q_short = int_vals[2] if len(int_vals) > 2 else 0
-                failed = int_vals[3] if len(int_vals) > 3 else 0
+                # 2. Pipeline enqueued_at timestamps for oldest waiting jobs
+                head_jobs = [j for j in q_heads if j]
+                for j in head_jobs:
+                    send_cmd("HGET", f"rq:job:{j}", "enqueued_at")
+                head_times = [parse_resp() for _ in head_jobs]
 
-                busy, idle = 0, len(worker_keys)
-                if worker_keys:
-                    pipe = ""
-                    for w in worker_keys:
-                        pipe += f"*3\r\n$4\r\nHGET\r\n${len(w)}\r\n{w}\r\n$5\r\nstate\r\n"
-                    s.sendall(pipe.encode("utf-8"))
-                    wdata = b""
-                    while True:
-                        wchunk = s.recv(4096)
-                        wdata += wchunk
-                        if len(wchunk) < 4096:
-                            break
-                    states = [l for l in wdata.decode("utf-8", errors="ignore").split("\r\n") if l in ("idle", "busy")]
+                now = time.time()
+                max_latency = 0.0
+                for t in head_times:
+                    if t:
+                        try:
+                            ts = datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
+                            max_latency = max(max_latency, max(0.0, now - ts))
+                        except Exception:
+                            pass
+
+                # 3. Pipeline worker states
+                if workers:
+                    for w in workers:
+                        send_cmd("HGET", w, "state")
+                    states = [parse_resp() for _ in workers]
                     busy = states.count("busy")
                     idle = states.count("idle")
+                else:
+                    busy = 0
+                    idle = 0
+
+                q_total = sum(q_lens)
+                # Saturation deficit: unserviced backlog when all workers are occupied
+                if idle == 0 and busy > 0:
+                    deficit = q_total
+                else:
+                    deficit = max(0, q_total - idle)
 
                 s.close()
-                redis_state["queue_default"] = q_def
-                redis_state["queue_long"] = q_long
-                redis_state["queue_short"] = q_short
-                redis_state["queue_total"] = q_def + q_long + q_short
+                redis_state["queue_default"] = q_lens[0]
+                redis_state["queue_long"] = q_lens[1]
+                redis_state["queue_short"] = q_lens[2]
+                redis_state["queue_total"] = q_total
+                redis_state["max_queue_latency_sec"] = round(max_latency, 2)
+                redis_state["saturation_deficit"] = deficit
                 redis_state["failed_jobs"] = failed
-                redis_state["workers_total"] = len(worker_keys)
+                redis_state["workers_total"] = len(workers)
                 redis_state["workers_busy"] = busy
                 redis_state["workers_idle"] = idle
+                redis_state["workers_busy_ratio"] = round(busy / len(workers), 2) if workers else 0.0
                 redis_state["last_updated"] = time.time()
             except Exception:
                 pass
@@ -188,6 +220,12 @@ data:
                     'frappe_rq_queue_length{queue="long"} ' + str(redis_state["queue_long"]),
                     'frappe_rq_queue_length{queue="short"} ' + str(redis_state["queue_short"]),
                     'frappe_rq_queue_length{queue="total"} ' + str(redis_state["queue_total"]),
+                    "# HELP frappe_rq_max_queue_latency_seconds Oldest waiting job age across all queues",
+                    "# TYPE frappe_rq_max_queue_latency_seconds gauge",
+                    f"frappe_rq_max_queue_latency_seconds {redis_state['max_queue_latency_sec']}",
+                    "# HELP frappe_rq_saturation_deficit Unserviced backlog when all workers are busy",
+                    "# TYPE frappe_rq_saturation_deficit gauge",
+                    f"frappe_rq_saturation_deficit {redis_state['saturation_deficit']}",
                     "# HELP frappe_rq_failed_jobs Number of failed jobs",
                     "# TYPE frappe_rq_failed_jobs gauge",
                     f"frappe_rq_failed_jobs {redis_state['failed_jobs']}",

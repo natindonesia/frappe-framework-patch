@@ -69,6 +69,22 @@ spec:
         {{- toYaml . | nindent 8 }}
   {{- end }}
   triggers:
+    {{- if and $wConfig.triggers $wConfig.triggers.queueLatency $wConfig.triggers.queueLatency.enabled }}
+    - type: metrics-api
+      metadata:
+        url: "http://granian-adapter.{{ include "frappe-bench.namespace" $ }}.svc.cluster.local:8080/"
+        format: "json"
+        valueLocation: "max_queue_latency_sec"
+        targetValue: {{ $wConfig.triggers.queueLatency.targetSeconds | default 5 | quote }}
+    {{- end }}
+    {{- if and $wConfig.triggers $wConfig.triggers.workerSaturation $wConfig.triggers.workerSaturation.enabled }}
+    - type: metrics-api
+      metadata:
+        url: "http://granian-adapter.{{ include "frappe-bench.namespace" $ }}.svc.cluster.local:8080/"
+        format: "json"
+        valueLocation: "saturation_deficit"
+        targetValue: {{ $wConfig.triggers.workerSaturation.targetValue | default 4 | quote }}
+    {{- end }}
     {{- if and $wConfig.triggers $wConfig.triggers.redisQueue $wConfig.triggers.redisQueue.enabled }}
     {{- $benchKey := default "home-frappe-frappe-bench" $wConfig.triggers.redisQueue.benchKey }}
     {{- range $wConfig.triggers.redisQueue.queues }}
