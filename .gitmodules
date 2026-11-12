@@ -2,3 +2,6 @@
 	path = frappe
 	url = https://github.com/frappe/frappe.git
 	branch = version-16
+[submodule "vendor/granian-k8s-autoscaler"]
+	path = vendor/granian-k8s-autoscaler
+	url = https://github.com/natindonesia/granian-k8s-autoscaler.git

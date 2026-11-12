@@ -122,6 +122,12 @@ networkPolicy:
   serviceCidr: 172.24.0.0/18
   nodeCidr: 192.168.10.0/24
   nodeLocalDnsVip: 169.254.20.10/32
+  # Autoscaling adapter -> kube-apiserver egress. On Cilium a
+  # CiliumNetworkPolicy (toEntities: kube-apiserver) is rendered automatically
+  # when the CRD is present; force it with ciliumApiServerEgress. On other
+  # CNIs list the API server endpoint CIDRs instead.
+  ciliumApiServerEgress: false
+  apiServerCidrs: []
   gatewayNamespace: envoy-gateway-system
   # Extra pod labels used to select the backing MariaDB pods (operator-managed
   # MariaDBs carry their own labels; default matches a plain `app: mariadb`).
@@ -165,6 +171,9 @@ web:
     limits:
       memory: 2Gi
   otelFrappeDbStatements: "0"
+  # Optional PriorityClass. Must outrank `overprovision.priorityClassName` so
+  # new web pods preempt the placeholders instead of waiting for a node.
+  priorityClassName: ""
   startupProbe:
     periodSeconds: 1
     timeoutSeconds: 5
@@ -201,12 +210,29 @@ workers:
     workerPool: true
     numWorkers: 2
     nofork: true
+    # Optional PriorityClass (e.g. below web so web wins CPU under contention).
+    priorityClassName: ""
     resources:
       requests:
         cpu: 100m
         memory: 256Mi
       limits:
         memory: 1Gi
+
+# Non-spinning reserve: low-priority pause pods that hold node capacity for
+# web scale-ups. A new web pod preempts one immediately instead of waiting
+# minutes for a node; the evicted placeholder goes Pending, which is the
+# signal for a cluster autoscaler to add a node (tertiary tier).
+# Requires web.priorityClassName to outrank priorityClassName below.
+overprovision:
+  enabled: false
+  replicas: 1
+  priorityClassName: best-effort
+  image:
+    repository: registry.k8s.io/pause
+    tag: "3.10"
+  # Empty = one web pod's requests.
+  resources: {}
 
 scheduler:
   replicas: 1
@@ -322,8 +348,21 @@ backup:
 # KEDA Autoscaling for Granian web and Redis RQ background workers
 autoscaling:
   enabled: false
+  # legacy:  per-trigger thresholds (granianQueue / queueLatency /
+  #          workerSaturation / redisQueue / cpu) evaluated by KEDA/HPA, fed by
+  #          the bundled inline adapter.
+  # elastic: github.com/natindonesia/granian-k8s-autoscaler. It measures service
+  #          time, arrival rate and pod ready time continuously and publishes
+  #          desired replicas; KEDA follows them (metrics-api, AverageValue,
+  #          target 1). Its reflex scales web UP directly within seconds of a
+  #          confirmed shock; scale-down stays with KEDA/HPA (hpaBehavior).
+  #          Only `cpu` triggers still apply, as a backstop.
+  mode: legacy
 
   adapter:
+    # Pod priority for the adapter itself (it is the fast path; keep it
+    # scheduled ahead of the workloads it scales).
+    priorityClassName: ""
     image:
       repository: python
       tag: "3.12-alpine"
@@ -335,6 +374,28 @@ autoscaling:
       limits:
         memory: 128Mi
     historyWindowSec: 1.0
+
+  # mode: elastic. The chart derives deployments, bounds and endpoints from the
+  # values below and renders the tool's JSON config; everything else goes in
+  # `config` (the tool's own schema, merged last; see its README/SAFETY docs).
+  elastic:
+    image:
+      repository: ghcr.io/natindonesia/granian-k8s-autoscaler
+      tag: "0.1.0"
+      digest: sha256:2be45c4e9ecd65d07594429f5113c9ab16a2fcf267bee6ca972674edc3bf62f7
+      pullPolicy: IfNotPresent
+    # Granian --workers x --blocking-threads per web pod. 0 = derive from
+    # web.args.
+    webThreadsPerPod: 0
+    # Raw granian-k8s-autoscaler config, merged over the derived one, e.g.
+    #   web: {target_utilization: 0.7, reflex: {max_step_pods: 8}}
+    #   queues: [...]   (replaces the derived list)
+    config: {}
+    # Opt-in guard against exhausting the database: fails `helm template` when
+    # web max x threads + workers max x slots exceeds utilization x maxConnections.
+    connectionBudget:
+      maxConnections: 0
+      utilization: 0.8
 
   web:
     enabled: true

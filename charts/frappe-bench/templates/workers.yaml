@@ -21,6 +21,9 @@ spec:
     spec:
       terminationGracePeriodSeconds: {{ $w.terminationGracePeriodSeconds | default 60 }}
       {{- include "frappe-bench.podDefaults" $ | nindent 6 }}
+      {{- with $w.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       containers:
         - name: worker
           image: {{ include "frappe-bench.imageRef" $.Values.runtime }}

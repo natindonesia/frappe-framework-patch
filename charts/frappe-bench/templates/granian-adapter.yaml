@@ -1,4 +1,4 @@
-{{- if and .Values.autoscaling.enabled (or (and .Values.autoscaling.web .Values.autoscaling.web.enabled) (and .Values.autoscaling.adapter .Values.autoscaling.adapter.enabled)) }}
+{{- if and .Values.autoscaling.enabled (ne (default "legacy" .Values.autoscaling.mode) "elastic") (or (and .Values.autoscaling.web .Values.autoscaling.web.enabled) (and .Values.autoscaling.adapter .Values.autoscaling.adapter.enabled)) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

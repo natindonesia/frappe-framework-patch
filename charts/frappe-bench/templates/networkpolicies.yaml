@@ -579,5 +579,39 @@ spec:
         - protocol: TCP
           port: {{ $cache }}
     {{- end }}
+    {{- range $np.apiServerCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    {{- end }}
+{{- if and (eq (default "legacy" .Values.autoscaling.mode) "elastic") (or $np.ciliumApiServerEgress (.Capabilities.APIVersions.Has "cilium.io/v2/CiliumNetworkPolicy")) }}
+---
+# 13) Adapter -> kube-apiserver (EndpointSlice discovery, deployments/scale).
+# Cilium tags the API server with the reserved kube-apiserver identity, which
+# plain ipBlock rules do not match reliably.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: granian-adapter-apiserver
+  namespace: {{ include "frappe-bench.namespace" . }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app: granian-adapter
+  egress:
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP
+{{- end }}
 {{- end }}
 {{- end }}

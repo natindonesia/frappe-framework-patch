@@ -40,6 +40,9 @@ spec:
         checksum/site-config: {{ include "frappe-bench.configChecksum" . | quote }}
     spec:
       {{- include "frappe-bench.podDefaults" . | nindent 6 }}
+      {{- with .Values.web.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       securityContext:
         sysctls:
           - name: net.ipv4.ip_local_port_range

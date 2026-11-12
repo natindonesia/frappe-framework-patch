@@ -1,0 +1,226 @@
+{{- /*
+Elastic autoscaling: runs github.com/natindonesia/granian-k8s-autoscaler.
+
+The chart only derives deployment names, bounds and endpoints from the other
+values and renders them as the tool's own JSON config; anything else is passed
+through `autoscaling.elastic.config` (same schema, merged last). Tool behaviour
+is documented in that repository, not here.
+*/}}
+{{- $elastic := eq (default "legacy" .Values.autoscaling.mode) "elastic" }}
+{{- if and .Values.autoscaling.enabled $elastic }}
+{{- $el := .Values.autoscaling.elastic | default dict }}
+{{- $ns := include "frappe-bench.namespace" . }}
+{{- $name := printf "%s-granian-adapter" (include "frappe-bench.canonicalName" .) }}
+{{- $metricsPort := int (default 9090 .Values.web.metricsPort) }}
+{{- $benchKey := default "home-frappe-frappe-bench" .Values.autoscaling.adapter.benchKey }}
+
+{{- /* Granian thread capacity per pod: --workers x --blocking-threads from web.args unless pinned. */}}
+{{- $tpp := int (default 0 $el.webThreadsPerPod) }}
+{{- if eq $tpp 0 }}
+{{- $args := join " " (.Values.web.args | default list) }}
+{{- $wk := regexFind "[0-9]+" (regexFind "--workers[ =]+[0-9]+" $args) }}
+{{- $bt := regexFind "[0-9]+" (regexFind "--blocking-threads[ =]+[0-9]+" $args) }}
+{{- if and $wk $bt }}{{- $tpp = mul (atoi $wk) (atoi $bt) }}{{- end }}
+{{- end }}
+
+{{- $cfg := dict "namespace" $ns "server" (dict "port" 8080) }}
+{{- $webMax := 0 }}
+{{- if and .Values.autoscaling.web .Values.autoscaling.web.enabled }}
+{{- $webMin := 1 }}{{- if hasKey .Values.autoscaling.web "minReplicas" }}{{- $webMin = .Values.autoscaling.web.minReplicas }}{{- end }}
+{{- $webMax = int (default 3 .Values.autoscaling.web.maxReplicas) }}
+{{- $web := dict "name" "web" "deployment" "web" "service" "web"
+      "headless_service" (printf "web-metrics.%s.svc.cluster.local" $ns)
+      "metrics_port" $metricsPort "min_replicas" (int $webMin) "max_replicas" $webMax }}
+{{- if gt $tpp 0 }}{{- $_ := set $web "threads_per_pod" $tpp }}{{- end }}
+{{- $_ := set $cfg "web" $web }}
+{{- end }}
+
+{{- $workerConns := 0 }}
+{{- $queues := list }}
+{{- range $wName, $wCfg := .Values.autoscaling.workers }}
+{{- if $wCfg.enabled }}
+{{- $wDef := index $.Values.workers $wName | default dict }}
+{{- $qs := list "default" "long" "short" }}
+{{- if $wDef.queue }}{{- $qs = splitList "," $wDef.queue }}{{- end }}
+{{- $wMin := 1 }}{{- if hasKey $wCfg "minReplicas" }}{{- $wMin = $wCfg.minReplicas }}{{- end }}
+{{- $wMax := int (default 5 $wCfg.maxReplicas) }}
+{{- $workerConns = add $workerConns (mul $wMax (int (default 1 $wDef.numWorkers))) }}
+{{- $queues = append $queues (dict "name" $wName "deployment" (printf "worker-%s" $wName) "queues" $qs "min_replicas" (int $wMin) "max_replicas" $wMax) }}
+{{- end }}
+{{- end }}
+{{- if $queues }}{{- $_ := set $cfg "queues" $queues }}{{- end }}
+{{- $_ := set $cfg "redis" (dict "host" .Values.backend.redis.host "port" (int .Values.backend.redis.port)
+      "queue_key" (printf "rq:queue:%s:{queue}" $benchKey)) }}
+{{- $cfg = mergeOverwrite $cfg (deepCopy ($el.config | default dict)) }}
+
+{{- /* Database connection budget (opt-in): worst case every web thread and worker slot holds one connection. */}}
+{{- $budget := $el.connectionBudget | default dict }}
+{{- if gt (int (default 0 $budget.maxConnections)) 0 }}
+{{- $allowed := int (floor (mulf (int $budget.maxConnections) (default 0.8 $budget.utilization))) }}
+{{- $worst := add (mul $webMax $tpp) $workerConns }}
+{{- if gt (int $worst) $allowed }}
+{{- fail (printf "autoscaling.elastic.connectionBudget: worst case %d connections (web %d x %d threads + workers %d) exceeds %d (%v of max_connections %d). Lower maxReplicas or raise the database limit." (int $worst) $webMax $tpp (int $workerConns) $allowed (default 0.8 $budget.utilization) (int $budget.maxConnections)) }}
+{{- end }}
+{{- end }}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: granian-adapter-config
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+data:
+  config.json: |-
+    {{- $cfg | toPrettyJson | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: granian-adapter
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: granian-adapter
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    resourceNames:
+      - web
+      {{- range $queues }}
+      - {{ .deployment }}
+      {{- end }}
+    # update = compare-and-swap scale write; the tool only ever raises replicas
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: granian-adapter
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: granian-adapter
+subjects:
+  - kind: ServiceAccount
+    name: granian-adapter
+    namespace: {{ $ns }}
+---
+# Headless: DNS returns every Ready web pod (discovery fallback when the API is unreachable).
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-metrics
+  namespace: {{ $ns }}
+  labels:
+    app: web
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app: web
+  ports:
+    - name: metrics
+      port: {{ $metricsPort }}
+      targetPort: {{ $metricsPort }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: granian-adapter
+  namespace: {{ $ns }}
+  labels:
+    app: granian-adapter
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: granian-adapter
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: granian-adapter
+  namespace: {{ $ns }}
+  labels:
+    app: granian-adapter
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+    {{- include "frappe-bench.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Single writer: never two instances at once during a rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: granian-adapter
+  template:
+    metadata:
+      labels:
+        app: granian-adapter
+        app.kubernetes.io/name: {{ $name }}
+        app.kubernetes.io/part-of: {{ include "frappe-bench.canonicalName" . }}
+      annotations:
+        checksum/config: {{ $cfg | toJson | sha256sum | trunc 16 }}
+    spec:
+      {{- include "frappe-bench.podDefaults" . | nindent 6 }}
+      {{- with .Values.autoscaling.adapter.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      serviceAccountName: granian-adapter
+      automountServiceAccountToken: true
+      containers:
+        - name: adapter
+          image: {{ include "frappe-bench.imageRef" $el.image }}
+          imagePullPolicy: {{ default "IfNotPresent" $el.image.pullPolicy }}
+          args: ["run", "--config", "/etc/granian-k8s-autoscaler/config.json"]
+          resources:
+            {{- toYaml .Values.autoscaling.adapter.resources | nindent 12 }}
+          ports:
+            - containerPort: 8080
+              name: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/granian-k8s-autoscaler
+      volumes:
+        - name: config
+          configMap:
+            name: granian-adapter-config
+{{- end }}

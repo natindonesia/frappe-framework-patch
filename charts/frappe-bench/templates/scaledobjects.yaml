@@ -1,5 +1,9 @@
 {{- if .Values.autoscaling.enabled }}
+{{- $elastic := eq (default "legacy" .Values.autoscaling.mode) "elastic" }}
+{{- $fb := (.Values.autoscaling.elastic | default dict).fallback | default dict }}
+{{- $adapterUrl := printf "http://granian-adapter.%s.svc.cluster.local:8080/v1/scalers" (include "frappe-bench.namespace" .) }}
 {{- if and .Values.autoscaling.web .Values.autoscaling.web.enabled }}
+{{- $webMax := int (default 3 .Values.autoscaling.web.maxReplicas) }}
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -24,8 +28,22 @@ spec:
       behavior:
         {{- toYaml . | nindent 8 }}
   {{- end }}
+  {{- if $elastic }}
+  fallback:
+    failureThreshold: {{ default 3 $fb.failureThreshold }}
+    replicas: {{ default (div (add $webMax 1) 2) .Values.autoscaling.web.fallbackReplicas }}
+  {{- end }}
   triggers:
-    {{- if and .Values.autoscaling.web.triggers .Values.autoscaling.web.triggers.granianQueue .Values.autoscaling.web.triggers.granianQueue.enabled }}
+    {{- if $elastic }}
+    # Desired replicas computed by the adapter (AverageValue / 1 = replicas).
+    - type: metrics-api
+      metricType: AverageValue
+      metadata:
+        url: "{{ $adapterUrl }}/web"
+        format: "json"
+        valueLocation: "desired"
+        targetValue: "1"
+    {{- else if and .Values.autoscaling.web.triggers .Values.autoscaling.web.triggers.granianQueue .Values.autoscaling.web.triggers.granianQueue.enabled }}
     - type: metrics-api
       metadata:
         url: "http://granian-adapter.{{ include "frappe-bench.namespace" . }}.svc.cluster.local:8080/"
@@ -43,6 +61,7 @@ spec:
 
 {{- range $wName, $wConfig := .Values.autoscaling.workers }}
 {{- if $wConfig.enabled }}
+{{- $wMax := int (default 5 $wConfig.maxReplicas) }}
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
@@ -68,7 +87,21 @@ spec:
       behavior:
         {{- toYaml . | nindent 8 }}
   {{- end }}
+  {{- if $elastic }}
+  fallback:
+    failureThreshold: {{ default 3 $fb.failureThreshold }}
+    replicas: {{ default (div (add $wMax 1) 2) $wConfig.fallbackReplicas }}
+  {{- end }}
   triggers:
+    {{- if $elastic }}
+    - type: metrics-api
+      metricType: AverageValue
+      metadata:
+        url: "{{ $adapterUrl }}/{{ $wName }}"
+        format: "json"
+        valueLocation: "desired"
+        targetValue: "1"
+    {{- else }}
     {{- if and $wConfig.triggers $wConfig.triggers.queueLatency $wConfig.triggers.queueLatency.enabled }}
     - type: metrics-api
       metadata:
@@ -93,6 +126,7 @@ spec:
         address: "{{ $.Values.backend.redis.host }}.{{ include "frappe-bench.namespace" $ }}.svc.cluster.local:{{ $.Values.backend.redis.port }}"
         listName: "rq:queue:{{ $benchKey }}:{{ .name }}"
         listLength: {{ .targetListLength | quote }}
+    {{- end }}
     {{- end }}
     {{- end }}
     {{- if and $wConfig.triggers $wConfig.triggers.cpu $wConfig.triggers.cpu.enabled }}

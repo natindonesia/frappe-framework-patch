@@ -56,8 +56,8 @@ oci://ghcr.io/natindonesia/charts/frappe-bench
 7. **Zero-Downtime Backup CronJob**:
    - Hourly database dumping and append-only S3 synchronization for sites and configuration backups.
 8. **Built-in KEDA Autoscaling**:
-   - Autoscales Granian WSGI web pods based on real-time internal blocking queue pressure (`sustained_queue`) with CPU backstops.
-   - Autoscales background RQ workers based on Redis queue depths (`default`, `long`, `short`).
+   - `autoscaling.mode: legacy` — per-trigger thresholds (Granian `sustained_queue`, RQ latency/saturation, CPU). Unchanged.
+   - `autoscaling.mode: elastic` — tiered, self-measuring scaling for sudden shocks. See [Elastic autoscaling](#elastic-autoscaling-autoscalingmode-elastic).
 
 ---
 
@@ -292,6 +292,39 @@ secrets). Set it to `false` only if you need a sync to proceed with a known-bad
 site for a repair.
 
 ---
+
+### Elastic autoscaling (`autoscaling.mode: elastic`)
+
+Runs [granian-k8s-autoscaler](https://github.com/natindonesia/granian-k8s-autoscaler), an
+independent open-source tool (also checked out as the `vendor/granian-k8s-autoscaler` submodule of
+this repository). It measures service time, arrival rate and pod ready time continuously at the
+Granian and Redis boundaries, publishes desired replicas for KEDA, and scales web **up** directly
+within seconds of a confirmed shock. Scale-down stays with KEDA/HPA (`hpaBehavior`). How it works,
+its guarantees and its limits are documented in that repository (`README.md`, `docs/SAFETY.md`);
+this chart only wires it up.
+
+The chart derives deployment names, bounds, Redis keys and Granian thread capacity
+(`--workers x --blocking-threads` from `web.args`) from the other values and renders the tool's
+JSON config. Anything else goes in `autoscaling.elastic.config` using the tool's own schema; the
+tool rejects unknown keys, so a typo fails loudly at startup:
+
+```yaml
+autoscaling:
+  enabled: true
+  mode: elastic
+  elastic:
+    connectionBudget: {maxConnections: 2000}   # helm template fails if web+worker maxima exceed 80%
+    config:
+      web: {target_utilization: 0.7, reflex: {max_step_pods: 4}}
+```
+
+Also rendered: a namespace-scoped Role (`endpointslices` get/list; `deployments/scale` get/update on
+the scaled Deployments only), a headless `web-metrics` Service, a `Recreate` Deployment (single
+writer), and on Cilium a policy allowing the adapter to reach the API server. Optional
+`overprovision` adds low-priority placeholder pods that new web pods preempt instantly (needs spare
+node capacity). KEDA `fallback` applies when the adapter is stale (it answers HTTP 503).
+
+`legacy` mode is unchanged from 0.3.18.
 
 ## License
 
