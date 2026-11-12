@@ -385,6 +385,9 @@ spec:
         - podSelector:
             matchLabels:
               app: bench-migrate
+        - podSelector:
+            matchLabels:
+              app: granian-adapter
         {{- range $workerNames }}
         - podSelector:
             matchLabels:

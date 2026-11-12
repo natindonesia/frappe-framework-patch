@@ -380,13 +380,13 @@ autoscaling:
       cooldownPeriod: 60
       triggers:
         queueLatency:
-          enabled: false
+          enabled: true
           targetSeconds: 5
         workerSaturation:
-          enabled: false
-          targetValue: 4
-        redisQueue:
           enabled: true
+          targetValue: 8
+        redisQueue:
+          enabled: false
           benchKey: "home-frappe-frappe-bench"
           queues:
             - name: default
