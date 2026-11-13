@@ -1,0 +1,139 @@
+# EXPERIMENTAL: Frappe on CPython 3.15 built with the experimental JIT.
+#
+# Manual only (workflow_dispatch). Fully separate from build-images.yml: it
+# never runs on push/PR, never touches the floating tags (latest / base /
+# latest-granian), and publishes only under an explicit experimental tag:
+#
+#   <frappe-version>-py315-granian       (PBS baseline x86_64)
+#   <frappe-version>-py315-v3-granian    (PBS x86_64_v3, needs AVX2)
+#
+# It does NOT rebuild Frappe. It layers on top of an already published granian
+# image (input `base_image`): the interpreter is swapped for python-build-
+# standalone (the build `uv` installs; official python:3.15 images have no JIT)
+# and the bench virtualenv is recreated on 3.15 with the dependency pins relaxed
+# for 3.15. See experiments/py315-jit/README.md. The JIT is compiled in but OFF
+# by default; enable it per deployment with PYTHON_JIT=1 so one image can be A/B
+# tested with the JIT on and off.
+#
+# The result is gated by the same compose/OTEL/CRUD contract that the main
+# pipeline runs against latest-granian before anything is published.
+name: Experimental - Python 3.15 + JIT image
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_image:
+        description: Published granian image to layer on (the pins in its pyproject must match the relax script)
+        required: true
+        default: ghcr.io/natindonesia/frappe:latest-granian
+        type: string
+      pbs_variant:
+        description: python-build-standalone CPU variant (x86_64_v3 needs AVX2, e.g. Ryzen 5950X)
+        required: true
+        default: x86_64
+        type: choice
+        options:
+          - x86_64
+          - x86_64_v3
+      push_to_registry:
+        description: Push the tested image to GHCR
+        required: false
+        default: false
+        type: boolean
+
+env:
+  DOCKER_BUILDKIT: 1
+  # python-build-standalone release and CPython version. Hashes are the
+  # install_only_stripped tarballs, matching the release's SHA256SUMS.
+  PBS_RELEASE: '20261110'
+  PBS_PYTHON: 3.15.2
+  PBS_SHA256_X86_64: ad23d1b73fac26440b0306ae06911031344c49a90ec19716c8362e7fa40cae43
+  PBS_SHA256_X86_64_V3: d565d9cfe46e0d213778a3f1fd6ab3715b59d2b57d7535f7ecc7d6c970834c39
+  SECONDARY_REGISTRY_URL: ${{ vars.SECONDARY_REGISTRY_URL || 'ghcr.io' }}
+  SECONDARY_REGISTRY_NAMESPACE: ${{ vars.SECONDARY_REGISTRY_NAMESPACE || github.repository_owner }}
+
+concurrency:
+  group: experimental-py315-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  py315:
+    name: 'Layer, test and publish py315 + JIT (${{ inputs.pbs_variant }})'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout (scripts, compose resources, experiment)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          submodules: false
+      - name: Resolve python-build-standalone artifact
+        run: |
+          variant="${{ inputs.pbs_variant }}"
+          case "$variant" in
+            x86_64)    sha="${PBS_SHA256_X86_64}";    suffix=py315 ;;
+            x86_64_v3) sha="${PBS_SHA256_X86_64_V3}"; suffix=py315-v3 ;;
+            *) echo "::error::unknown pbs_variant '$variant'"; exit 1 ;;
+          esac
+          file="cpython-${PBS_PYTHON}+${PBS_RELEASE}-${variant}-unknown-linux-gnu-install_only_stripped.tar.gz"
+          url="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/${file//+/%2B}"
+          {
+            echo "PBS_URL=${url}"
+            echo "PBS_SHA256=${sha}"
+            echo "TAG_SUFFIX=${suffix}"
+          } >> "$GITHUB_ENV"
+      - name: Login to GHCR (pull base, publish)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull base image and record its digest
+        run: |
+          base="${{ inputs.base_image }}"
+          docker pull "$base"
+          digest="$(docker image inspect -f '{{index .RepoDigests 0}}' "$base")"
+          echo "BASE_DIGEST=${digest}" >> "$GITHUB_ENV"
+          echo "Base: ${digest}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Build py315 layer on top of the base image
+        run: |
+          docker build \
+            -f experiments/py315-jit/Dockerfile \
+            --build-arg "BASE_IMAGE=${{ inputs.base_image }}" \
+            --build-arg "PBS_URL=${PBS_URL}" \
+            --build-arg "PBS_SHA256=${PBS_SHA256}" \
+            --label "org.opencontainers.image.base.name=${{ inputs.base_image }}" \
+            --label "org.opencontainers.image.base.digest=${BASE_DIGEST#*@}" \
+            --label "org.opencontainers.image.python-runtime=python-build-standalone ${PBS_PYTHON}+${PBS_RELEASE} ${{ inputs.pbs_variant }}" \
+            -t frappe-granian:latest \
+            experiments/py315-jit
+      - name: Verify interpreter, JIT and compiled dependencies
+        run: |
+          docker run --rm -i frappe-granian:latest ./env/bin/python - <<'EOF'
+          import sys
+          assert sys.version_info[:2] == (3, 15), sys.version
+          assert sys._jit.is_available(), "JIT not compiled in"
+          assert not sys._jit.is_enabled(), "JIT must be off unless PYTHON_JIT=1"
+          import MySQLdb, RestrictedPython, duckdb, frappe, granian, hiredis, orjson, plutoprint, pyarrow, pydantic, yaml
+          from frappe.otel_wsgi import application
+          assert yaml.__with_libyaml__, "PyYAML built without libyaml"
+          print("python", sys.version.split()[0], "| frappe", frappe.__version__, "| otel_wsgi entrypoint loads")
+          print("duckdb", duckdb.__version__, "| pyarrow", pyarrow.__version__, "| orjson", orjson.__version__)
+          print("pydantic", pydantic.VERSION, "| granian", granian.__version__, "| libyaml", yaml.__with_libyaml__)
+          EOF
+          docker run --rm -e PYTHON_JIT=1 frappe-granian:latest ./env/bin/python -c \
+            'import sys; assert sys._jit.is_enabled(), "PYTHON_JIT=1 did not enable the JIT"; print("PYTHON_JIT=1 -> JIT enabled")'
+          docker run --rm frappe-granian:latest ./env/bin/granian --version
+      - name: Common compose/OTEL/CRUD contract (latest-granian)
+        run: bash scripts/ci/matrix-variant-test.sh latest-granian
+      - name: Publish experimental tag to GHCR
+        if: ${{ inputs.push_to_registry }}
+        run: |
+          source scripts/ci/common.sh
+          version="$(image_frappe_version frappe-granian:latest)"
+          tag="${version}-${TAG_SUFFIX}-granian"
+          publish_secondary frappe-granian:latest "frappe:${tag}"
+          echo "Published $(secondary_registry)/frappe:${tag}" | tee -a "$GITHUB_STEP_SUMMARY"
