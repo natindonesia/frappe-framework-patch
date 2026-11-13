@@ -71,9 +71,15 @@ spec:
               mountPath: /home/frappe/frappe-bench/sites
               readOnly: true
             {{- include "frappe-bench.appVolumeMounts" . | nindent 12 }}
+            {{- with .Values.nginx.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         {{- include "frappe-bench.appVolumes" . | nindent 8 }}
         - name: sites-data
           persistentVolumeClaim:
             claimName: {{ include "frappe-bench.sitesClaim" . }}
             readOnly: true
+        {{- with .Values.nginx.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
