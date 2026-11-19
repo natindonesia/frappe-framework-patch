@@ -1,10 +1,10 @@
 # Consolidated Docker + Granian pipeline. The three published variants
 # (base / latest / latest-granian) are built+pre-validated per ARCHITECTURE in
-# ONE job each and transferred as exact Docker archives; then a single common
-# test contract runs against ALL THREE on BOTH architectures via a matrix;
-# security scanning (Semgrep OWASP Top 10 + CWE Top 25 SAST, Trivy source/config,
-# and Trivy image scans) runs in parallel; publish happens only after every
-# matrix entry AND every security job passes. No downstream rebuild.
+# ONE job each and transferred as exact Docker archives; then a single job per
+# variant per architecture runs the common test contract AND the Trivy image
+# scan against that exact archive. Static analysis (Semgrep OWASP Top 10 + CWE
+# Top 25 SAST, Trivy source/config) runs in parallel; publish happens only after
+# every matrix entry AND the static analysis pass. No downstream rebuild.
 #
 # MULTI-ARCH (linux/amd64 + linux/arm64):
 #   * Each architecture is built NATIVELY on a runner of its own architecture —
@@ -15,8 +15,10 @@
 #     "never ARM: container build" rule in infrastructure-playbook#53 §4: that
 #     rule assumes an amd64 payload on an ARM runner (i.e. emulation), whereas
 #     here the ARM runner produces an arm64 payload with its own toolchain.
-#   * Buildx registry caches are per architecture (`main-amd64` / `main-arm64`):
-#     one cache ref stores one platform, so the legs must not share it.
+#   * The only layer cache is the runner's buildx builder backed by Blacksmith's
+#     sticky disk (`cache-key: Dockerfile-<arch>`). No registry cache and no gha
+#     cache: nothing is written to a registry for caching, so there is no
+#     frappe-buildcache package to store, prune or authenticate.
 #   * Each leg pushes single-arch manifests (`<tag>-amd64` / `<tag>-arm64`); the
 #     merge job folds them into the multi-arch index under the published tag, so
 #     `docker pull` selects the right platform automatically. The arch tags are
@@ -99,8 +101,6 @@ jobs:
     timeout-minutes: 150
     permissions:
       contents: read
-      # Push buildx layer-cache manifests to GHCR (frappe-buildcache).
-      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -110,10 +110,6 @@ jobs:
             runner: blacksmith-4vcpu-ubuntu-2404
           - arch: arm64
             runner: blacksmith-4vcpu-ubuntu-2404-arm
-    env:
-      # A buildx registry cache ref stores ONE platform, so every architecture
-      # gets its own ref (read by scripts/ci/common.sh:build_cache_ref).
-      BUILD_CACHE_TAG: main-${{ matrix.arch }}
     steps:
       # Fail fast (and loudly) when the leg landed on the wrong runner: an
       # arm64 leg on an x64 runner would silently emulate the whole bench build.
@@ -145,25 +141,15 @@ jobs:
             echo "IMAGE_CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "FRAPPE_SHA=$(git -C frappe rev-parse HEAD)"
           } >> "$GITHUB_ENV"
-      # Blacksmith's builder replaces docker/setup-buildx-action: same buildx
-      # commands, plus a sticky-disk layer cache keyed per architecture. The
-      # workflow still exports the per-arch registry cache below, so a cold
-      # sticky disk is never a cold `bench init`.
+      # The ONLY layer cache: Blacksmith's sticky disk, keyed per architecture.
+      # No registry cache, no gha cache — nothing is written to a registry, so
+      # there is no frappe-buildcache package to store, prune or authenticate.
       - name: Set up Docker Buildx (Blacksmith sticky-disk cache)
         uses: useblacksmith/setup-docker-builder@v2
         with:
           cache-key: Dockerfile-${{ matrix.arch }}
-      # Auth for the shared buildx registry-cache ref (ghcr.io/.../frappe-buildcache,
-      # resolved by scripts/ci/common.sh:build_cache_ref). Override
-      # BUILD_CACHE_REGISTRY only together with an extra login step for that registry.
-      - name: Login to GHCR (buildx layer cache)
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      # Build base FIRST so the shared pristine builder-base layers are pushed
-      # to the registry cache ref before the patched build consumes them.
+      # Build base FIRST so the shared pristine builder-base layers land in the
+      # builder cache before the patched build consumes them.
       - name: Build unpatched base Docker image (frappe:base)
         run: bash scripts/ci/base-build.sh
       - name: Build patched Docker image layered on shared base (frappe:latest)
@@ -193,14 +179,18 @@ jobs:
           path: /tmp/tested-images.tar.gz
           retention-days: 1
 
-  # STAGE 2: run the SAME common compose/OTEL/CRUD contract against all three
-  # variants on both architectures. Consumes the exact per-arch archive; never
-  # rebuilds or pulls.
+  # STAGE 2: the SAME common compose/OTEL/CRUD contract PLUS the Trivy image
+  # scan, per variant per architecture. Both run against the image this job
+  # already loaded from the tested archive, so the scan costs no extra
+  # download/load and one runner does contract + scan instead of two jobs.
   variant-matrix:
-    name: 'Matrix - common contract (${{ matrix.arch }}, ${{ matrix.variant }})'
+    name: 'Matrix - contract + image scan (${{ matrix.arch }}, ${{ matrix.variant }})'
     needs: images
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    permissions:
+      contents: read
+      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -211,6 +201,9 @@ jobs:
             runner: blacksmith-4vcpu-ubuntu-2404
           - arch: arm64
             runner: blacksmith-4vcpu-ubuntu-2404-arm
+    env:
+      # Report-only: scan and upload results, but do not fail the job/publish.
+      SECURITY_FAIL_ON_FINDINGS: false
     steps:
       - name: Checkout scripts and compose resources
         uses: actions/checkout@v7
@@ -226,17 +219,42 @@ jobs:
         run: gunzip -c /tmp/tested-images.tar.gz | docker load
       - name: Run common contract for ${{ matrix.variant }} on ${{ matrix.arch }}
         run: bash scripts/ci/matrix-variant-test.sh "${{ matrix.variant }}"
+      # Scan the exact image this job just tested (vuln + secret + misconfig).
+      # The variant -> local tag mapping mirrors matrix-variant-test.sh.
+      - name: Trivy image scan (${{ matrix.variant }} on ${{ matrix.arch }})
+        run: |
+          set -euo pipefail
+          case "${{ matrix.variant }}" in
+            base) image=frappe:base ;;
+            latest) image=frappe:latest ;;
+            latest-granian) image=frappe-granian:latest ;;
+            *) echo "::error::unknown variant ${{ matrix.variant }}"; exit 2 ;;
+          esac
+          bash scripts/ci/security-scan-images.sh "$image"
+          # Exactly one image is scanned here; normalise the report name.
+          cp security-results/trivy-image-*.sarif security-results/trivy-image.sarif
+      - name: Upload Trivy image SARIF (${{ matrix.variant }} on ${{ matrix.arch }})
+        if: always() && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: security-results/trivy-image.sarif
+          category: trivy-image-${{ matrix.variant }}-${{ matrix.arch }}
 
-  # STAGE 2b: static application security testing. Semgrep is run against the
-  # owned patch/script surface (not the checked-out Frappe submodule) using the
-  # OWASP Top 10 and CWE Top 25 rule packs. Runs independent of the image build.
-  sast:
-    name: 'SAST - Semgrep OWASP Top 10 + CWE Top 25'
+  # STAGE 2b: static analysis of the owned surface, independent of the image
+  # build. Semgrep (OWASP Top 10 + CWE Top 25) still FAILS the job on
+  # ERROR-severity findings; the Trivy source scan is report-only and runs even
+  # when Semgrep fails, so neither result hides the other.
+  static-analysis:
+    name: 'Static analysis - Semgrep SAST + Trivy source'
     runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       security-events: write
+    env:
+      # Trivy source scan only; Semgrep keeps its own ERROR-severity gate.
+      SECURITY_FAIL_ON_FINDINGS: false
     steps:
       - name: Checkout source
         uses: actions/checkout@v7
@@ -244,6 +262,9 @@ jobs:
           submodules: false
       - name: Run Semgrep SAST
         run: bash scripts/ci/security-scan-sast.sh
+      - name: Run Trivy filesystem + config scan
+        if: always()
+        run: bash scripts/ci/security-scan-source.sh
       - name: Upload Semgrep SARIF
         if: always() && github.ref == 'refs/heads/main'
         continue-on-error: true
@@ -251,26 +272,6 @@ jobs:
         with:
           sarif_file: security-results/semgrep.sarif
           category: semgrep
-
-  # STAGE 2c: dependency/secret/IaC scan of the checked-out source tree with
-  # Trivy (no image required). Also independent of the image build.
-  trivy-source:
-    name: 'Security - Trivy source (deps, secrets, IaC)'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      security-events: write
-    env:
-      # Report-only: scan and upload results, but do not fail the job/publish.
-      SECURITY_FAIL_ON_FINDINGS: false
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v7
-        with:
-          submodules: false
-      - name: Run Trivy filesystem + config scan
-        run: bash scripts/ci/security-scan-source.sh
       - name: Upload Trivy filesystem SARIF
         if: always() && github.ref == 'refs/heads/main'
         continue-on-error: true
@@ -286,66 +287,6 @@ jobs:
           sarif_file: security-results/trivy-config.sarif
           category: trivy-source-config
 
-  # STAGE 2d: container image scan of the EXACT tested images (vuln, secrets,
-  # insecure config) before any publish. Consumes the same per-arch archives as
-  # the variant matrix; never rebuilds. Both architectures are scanned, because
-  # a CVE can be arch-specific (different wheels, different binaries).
-  trivy-images:
-    name: 'Security - Trivy images ${{ matrix.arch }} (vuln, secret, misconfig)'
-    needs: images
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
-        include:
-          - arch: amd64
-            runner: blacksmith-2vcpu-ubuntu-2404
-          - arch: arm64
-            runner: blacksmith-2vcpu-ubuntu-2404-arm
-    env:
-      # Report-only: scan and upload results, but do not fail the job/publish.
-      SECURITY_FAIL_ON_FINDINGS: false
-    steps:
-      - name: Checkout scripts
-        uses: actions/checkout@v7
-        with:
-          submodules: false
-      - name: Download tested ${{ matrix.arch }} images
-        uses: actions/download-artifact@v8
-        with:
-          name: tested-images-${{ matrix.arch }}
-          path: /tmp
-      - name: Load tested images
-        run: gunzip -c /tmp/tested-images.tar.gz | docker load
-      - name: Run Trivy image scan
-        run: bash scripts/ci/security-scan-images.sh frappe:latest frappe:base frappe-granian:latest
-      - name: Upload Trivy image SARIF (latest)
-        if: always() && github.ref == 'refs/heads/main'
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: security-results/trivy-image-frappe_latest.sarif
-          category: trivy-image-latest-${{ matrix.arch }}
-      - name: Upload Trivy image SARIF (base)
-        if: always() && github.ref == 'refs/heads/main'
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: security-results/trivy-image-frappe_base.sarif
-          category: trivy-image-base-${{ matrix.arch }}
-      - name: Upload Trivy image SARIF (granian)
-        if: always() && github.ref == 'refs/heads/main'
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: security-results/trivy-image-frappe-granian_latest.sarif
-          category: trivy-image-granian-${{ matrix.arch }}
-
   # STAGE 3a: push the EXACT tested images of ONE architecture as single-arch
   # manifests. Nothing is rebuilt: `docker tag` + `docker push` from the tested
   # archive. The arch-suffixed tags are permanent — the multi-arch index created
@@ -353,7 +294,7 @@ jobs:
   # protects them via KEEP_TAG_PATTERN.
   publish-arch:
     name: 'Publish ${{ matrix.arch }} manifests'
-    needs: [variant-matrix, sast, trivy-source, trivy-images]
+    needs: [variant-matrix, static-analysis]
     if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true)
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45

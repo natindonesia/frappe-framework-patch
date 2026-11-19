@@ -8,17 +8,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # builder-base stages (no patches applied, `base` label baked in), which the
 # patched frappe:latest then layers on top of. NOT the patched production image.
 #
-# SAME registry cache ref as vanilla-build.sh (shared base/builder-base stages);
-# vanilla-build's builder-patched keys separately inside the shared scope, so
-# the variants stay distinct without duplicating the dependency cache blobs.
+# NO registry/gha cache flags: the layer cache is the runner's own buildx
+# builder, i.e. Blacksmith's sticky disk (useblacksmith/setup-docker-builder,
+# keyed per architecture in the workflow). Nothing is written to a registry, so
+# there is no frappe-buildcache package and no cache credentials needed.
 set_image_metadata_args
-CACHE_REF="$(build_cache_ref)"
 docker buildx build \
   --target frappe-base \
   "${IMAGE_METADATA_ARGS[@]}" \
   --load \
-  --cache-from "type=registry,ref=${CACHE_REF}" \
-  --cache-from type=gha,scope=frappe \
-  --cache-to "type=registry,ref=${CACHE_REF},mode=max" \
   -t frappe:base \
   .

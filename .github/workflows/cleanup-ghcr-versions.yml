@@ -1,14 +1,15 @@
 # Weekly hygiene for the GHCR packages: delete package versions older than
 # CLEANUP_MAX_AGE_DAYS that the current release no longer references, keeping
 # everything the current tags (latest / base / latest-granian and their per-arch
-# children latest-amd64 / latest-arm64 / … / buildcache:main-amd64,
-# buildcache:main-arm64) resolve to plus their cosign signatures and
-# attestations — regardless of age — and every immutable release tag
-# (<version>, <version>-base, <version>-granian and their -amd64 / -arm64
+# children latest-amd64 / latest-arm64 / …) resolve to plus their cosign
+# signatures and attestations — regardless of age — and every immutable release
+# tag (<version>, <version>-base, <version>-granian and their -amd64 / -arm64
 # children). This removes the sha256-<digest> versions GHCR auto-lists for
 # retired signature/attestation manifests (the visible package-page noise).
 # The per-arch tags are permanent by design: every multi-arch index references
 # its child manifests by digest, so pruning them would break the index.
+# There is no build-cache package to prune: the layer cache lives on the
+# runner's Blacksmith sticky disk, not in a registry.
 name: Cleanup GHCR package versions
 
 on:
@@ -33,7 +34,7 @@ concurrency:
 
 jobs:
   cleanup:
-    name: 'Prune stale package versions (frappe, frappe-buildcache)'
+    name: 'Prune stale package versions (frappe)'
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
@@ -73,18 +74,4 @@ jobs:
               latest-amd64 latest-arm64 \
               base-amd64 base-arm64 \
               latest-granian-amd64 latest-granian-arm64
-          fi
-      - name: Prune frappe-buildcache (per-arch refs protected)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
-        run: |
-          if [ "$DRY_RUN" = "1" ]; then
-            bash scripts/ci/ghcr-cleanup.sh --dry-run \
-              "${{ vars.SECONDARY_REGISTRY_NAMESPACE || github.repository_owner }}" frappe-buildcache \
-              main-amd64 main-arm64
-          else
-            bash scripts/ci/ghcr-cleanup.sh \
-              "${{ vars.SECONDARY_REGISTRY_NAMESPACE || github.repository_owner }}" frappe-buildcache \
-              main-amd64 main-arm64
           fi

@@ -287,13 +287,14 @@ overlays).
 - `build-images.yml` — on push / pull_request. Runs once per architecture
   (`linux/amd64` on `blacksmith-4vcpu-ubuntu-2404`, `linux/arm64` on
   `blacksmith-4vcpu-ubuntu-2404-arm` — native, never QEMU). Each leg builds the
-  unpatched `base` first (populating that architecture's registry cache ref),
-  then the patched `latest` on top of it, then `latest-granian` from the tested
-  local `frappe:latest`; validates all three, exports them as one archive, and
-  the same contract then runs per variant **per architecture**. On an approved
-  main push each leg pushes its single-arch manifests (`latest-amd64`,
-  `latest-arm64`, …, plus the immutable release tags), and a merge job folds
-  them into the multi-arch `ghcr.io/<owner>/frappe:latest`, `frappe:base`, and
+  unpatched `base` first, then the patched `latest` on top of it, then
+  `latest-granian` from the tested local `frappe:latest`; validates all three
+  and exports them as one archive. One job per variant **per architecture** then
+  loads that archive, runs the common contract, and Trivy-scans the same image
+  (no second download). On an approved main push each leg pushes its
+  single-arch manifests (`latest-amd64`, `latest-arm64`, …, plus the immutable
+  release tags), and a merge job folds them into the multi-arch
+  `ghcr.io/<owner>/frappe:latest`, `frappe:base`, and
   `frappe:latest-granian` indexes (and the same tags in the optional primary
   registry `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:*` when configured).
   The merge only rewrites the index — the tested per-arch bytes are never
@@ -312,28 +313,32 @@ arm64 leg is the one documented exception to that ADR's "no ARM container
 builds" rule: the payload is arm64, so the runner is arm64 and no emulation is
 involved.
 
-Each architecture has its own buildx registry cache ref
-(`ghcr.io/<owner>/frappe-buildcache:main-amd64` and `:main-arm64`, overridable
-via `BUILD_CACHE_REGISTRY` / `BUILD_CACHE_NAMESPACE` / `BUILD_CACHE_TAG`), so
-the expensive bench-init layers are stored once per architecture and patch
-edits never re-run them. `gha` cache is a restore-only fallback. The Granian
-build uses no cache flags (thin layer on top of the tested local image).
+The **only** layer cache is Blacksmith's sticky disk
+(`useblacksmith/setup-docker-builder`, `cache-key: Dockerfile-<arch>`). There is
+no registry cache and no `gha` cache: nothing is written to a registry for
+caching, so there is no `frappe-buildcache` package to store, prune or
+authenticate, and the build job needs no registry credentials at all. The
+trade-off is explicit — a cold sticky disk means a cold `bench init`. The
+Granian build uses no cache flags either (thin layer on top of the tested local
+image).
 
 ## Security scanning
 
-`build-images.yml` gates publish on three independent security jobs (all upload
+`build-images.yml` gates publish on security work in two places (all upload
 SARIF to the GitHub Security tab when GHAS is enabled; upload failure never
 masks a scan):
 
-- `sast` — Semgrep with the `p/owasp-top-ten` and `p/cwe-top-25` packs over
-  the owned `scripts/ resources/ runtime/ tests/ patches/` surface. Fails on
-  `ERROR`-severity findings.
-- `trivy-source` — Trivy filesystem + config scan (dependency CVEs, committed
-  secrets, Dockerfile/compose/YAML hardening) over the checked-out tree.
-- `trivy-images` — Trivy scan of the exact tested images (vuln + secret +
-  misconfig) after load, before any publish. Fails on `CRITICAL,HIGH`.
+- `static-analysis` — one job, two scans. Semgrep with the `p/owasp-top-ten`
+  and `p/cwe-top-25` packs over the owned
+  `scripts/ resources/ runtime/ tests/ patches/` surface, failing on
+  `ERROR`-severity findings; then Trivy filesystem + config (dependency CVEs,
+  committed secrets, Dockerfile/compose/YAML hardening) over the checked-out
+  tree, report-only and run even when Semgrep fails.
+- `variant-matrix` — Trivy image scan (vuln + secret + misconfig) of the exact
+  tested image, in the same job that already loaded and exercised it, so the
+  scan needs no extra artifact download. Report-only.
 
-All three run locally via `bash scripts/ci/security-scan-{sast,source,images}.sh`
+All scans run locally via `bash scripts/ci/security-scan-{sast,source,images}.sh`
 (the image script requires the images be loaded locally). Tune versions and
 gates with `TRIVY_VERSION`, `SEMGREP_VERSION`, `SECURITY_SEVERITY`,
 `SEMGREP_SEVERITY`, `SECURITY_FAIL_ON_FINDINGS`; `SEMGREP_EXTRA_CONFIGS`
