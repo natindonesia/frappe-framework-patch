@@ -43,7 +43,7 @@ env:
 jobs:
   validate:
     name: Lint chart
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -69,7 +69,7 @@ jobs:
     name: Publish to GHCR (public)
     needs: validate
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7

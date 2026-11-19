@@ -35,6 +35,25 @@ and an older release can be re-published from its `release/frappe-<version>`
 branch without touching `latest`. Release tags are exempt from the GHCR cleanup
 job.
 
+### Architectures
+
+Every published tag is a **multi-arch index** covering `linux/amd64` and
+`linux/arm64`; `docker pull` selects the platform of the host automatically.
+Each platform is built natively (x64 runner for amd64, ARM runner for arm64 —
+never QEMU), so the two manifests are real toolchain outputs, not emulation.
+
+Each index points at permanent per-architecture child tags. They are published
+because the index references its children **by digest**, so they must outlive
+the tag that first introduced them (the GHCR cleanup keeps them):
+
+| Child tag | Platform |
+|---|---|
+| `<tag>-amd64` | `linux/amd64` manifest (e.g. `latest-amd64`, `16.55.2-base-amd64`) |
+| `<tag>-arm64` | `linux/arm64` manifest (e.g. `latest-arm64`, `16.55.2-granian-arm64`) |
+
+Pull a child tag directly only when you need to pin one platform; otherwise use
+the multi-arch tag and let Docker choose.
+
 Pin by digest for production — tags move, digests do not:
 
 ```bash
@@ -55,8 +74,9 @@ So the lineage is `base → latest → latest-granian`, and `base` differs from
 Every image carries OCI labels: `org.opencontainers.image.title`,
 `.description`, `.url`, `.source`, `.revision`, `.created`, `.version`,
 `.frappe-sha` (pinned Frappe submodule commit), `.variant`, and
-`.patches-applied`. Only `latest`, `base`, and `latest-granian` are ever
-published — no SHA, commit, run, or temporary tags.
+`.patches-applied`. Only `latest`, `base`, and `latest-granian` (plus their
+immutable release equivalents and the per-arch child tags described above) are
+ever published — no SHA, commit, or run tags.
 
 ## What's inside
 
@@ -264,25 +284,40 @@ model (patches applied after `bench init`; the build context vendors
 `resources/`, `docker-compose.yml`, `Dockerfile.granian`, and the `runtime/`
 overlays).
 
-- `build-images.yml` — on push / pull_request. Builds the unpatched `base`
-  first (populating the shared registry cache ref), then the patched `latest`
-  on top of it, then `latest-granian` from the tested local `frappe:latest`;
-  validates all three, then on an approved main push publishes
-  `ghcr.io/<owner>/frappe:latest`, `frappe:base`, and
-  `frappe:latest-granian`, plus the same three tags to the optional primary
-  registry (`${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:*`) when configured.
+- `build-images.yml` — on push / pull_request. Runs once per architecture
+  (`linux/amd64` on `blacksmith-4vcpu-ubuntu-2404`, `linux/arm64` on
+  `blacksmith-4vcpu-ubuntu-2404-arm` — native, never QEMU). Each leg builds the
+  unpatched `base` first (populating that architecture's registry cache ref),
+  then the patched `latest` on top of it, then `latest-granian` from the tested
+  local `frappe:latest`; validates all three, exports them as one archive, and
+  the same contract then runs per variant **per architecture**. On an approved
+  main push each leg pushes its single-arch manifests (`latest-amd64`,
+  `latest-arm64`, …, plus the immutable release tags), and a merge job folds
+  them into the multi-arch `ghcr.io/<owner>/frappe:latest`, `frappe:base`, and
+  `frappe:latest-granian` indexes (and the same tags in the optional primary
+  registry `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:*` when configured).
+  The merge only rewrites the index — the tested per-arch bytes are never
+  rebuilt, and their digests are asserted against the pushed arch tags.
 - `cleanup-ghcr-versions.yml` — daily prune of stale GHCR package versions
-  (keeps current-release digests, signatures, and attestations).
+  (keeps current-release digests, per-arch children, signatures, and
+  attestations).
 - `update-upstream.yml` — manual (`workflow_dispatch`). Advances `frappe/` to
   the latest `origin/version-16`, validates the patch set, and pushes only the
   parent repository's gitlink commit when validation succeeds.
 
-Both variant builds share one buildx registry cache ref
-(`ghcr.io/<owner>/frappe-buildcache:main`, overridable via
-`BUILD_CACHE_REGISTRY` / `BUILD_CACHE_NAMESPACE` / `BUILD_CACHE_TAG`), so the
-expensive bench-init layers are stored once and patch edits never re-run them.
-`gha` cache is a restore-only fallback. The Granian build uses no cache flags
-(thin layer on top of the tested local image).
+Every workflow in this repository runs on Blacksmith managed runners
+(`blacksmith-{2,4}vcpu-ubuntu-2404`, `-arm` only for the native arm64 build
+leg), per infrastructure-playbook#53 — there is no `ubuntu-latest` left, and the
+arm64 leg is the one documented exception to that ADR's "no ARM container
+builds" rule: the payload is arm64, so the runner is arm64 and no emulation is
+involved.
+
+Each architecture has its own buildx registry cache ref
+(`ghcr.io/<owner>/frappe-buildcache:main-amd64` and `:main-arm64`, overridable
+via `BUILD_CACHE_REGISTRY` / `BUILD_CACHE_NAMESPACE` / `BUILD_CACHE_TAG`), so
+the expensive bench-init layers are stored once per architecture and patch
+edits never re-run them. `gha` cache is a restore-only fallback. The Granian
+build uses no cache flags (thin layer on top of the tested local image).
 
 ## Security scanning
 

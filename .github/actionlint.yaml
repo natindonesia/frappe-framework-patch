@@ -1,0 +1,9 @@
+# actionlint configuration: Blacksmith managed-runner labels are not in
+# actionlint's built-in label list, so declare them here. Keep this in sync with
+# infrastructure-playbook#53 (labels: blacksmith-<vcpu>vcpu-ubuntu-2404[-arm]).
+self-hosted-runner:
+  labels:
+    - blacksmith-2vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2404
+    - blacksmith-2vcpu-ubuntu-2404-arm
+    - blacksmith-4vcpu-ubuntu-2404-arm

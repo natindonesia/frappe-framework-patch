@@ -1,10 +1,27 @@
 # Consolidated Docker + Granian pipeline. The three published variants
-# (base / latest / latest-granian) are built+pre-validated in ONE job and
-# transferred as an exact Docker archive; then a single common test contract
-# runs against ALL THREE via a matrix; security scanning (Semgrep OWASP Top 10
-# + CWE Top 25 SAST, Trivy source/config, and Trivy image scans) runs in
-# parallel; publish happens only after every matrix entry AND every security
-# job passes. No downstream rebuild, no temporary registry tags.
+# (base / latest / latest-granian) are built+pre-validated per ARCHITECTURE in
+# ONE job each and transferred as exact Docker archives; then a single common
+# test contract runs against ALL THREE on BOTH architectures via a matrix;
+# security scanning (Semgrep OWASP Top 10 + CWE Top 25 SAST, Trivy source/config,
+# and Trivy image scans) runs in parallel; publish happens only after every
+# matrix entry AND every security job passes. No downstream rebuild.
+#
+# MULTI-ARCH (linux/amd64 + linux/arm64):
+#   * Each architecture is built NATIVELY on a runner of its own architecture —
+#     x64 on `blacksmith-4vcpu-ubuntu-2404`, arm64 on
+#     `blacksmith-4vcpu-ubuntu-2404-arm`. No QEMU: emulating this `bench init`
+#     (pip + yarn over the whole app tree) costs 2-10x wall clock and would not
+#     fit the timeout. This is the one intentional exception to the
+#     "never ARM: container build" rule in infrastructure-playbook#53 §4: that
+#     rule assumes an amd64 payload on an ARM runner (i.e. emulation), whereas
+#     here the ARM runner produces an arm64 payload with its own toolchain.
+#   * Buildx registry caches are per architecture (`main-amd64` / `main-arm64`):
+#     one cache ref stores one platform, so the legs must not share it.
+#   * Each leg pushes single-arch manifests (`<tag>-amd64` / `<tag>-arm64`); the
+#     merge job folds them into the multi-arch index under the published tag, so
+#     `docker pull` selects the right platform automatically. The arch tags are
+#     permanent because the index references its children by digest.
+#
 # Publish promotes those exact tested images to every configured registry: the
 # optional primary (e.g. registry.digitalocean.com, only when REGISTRY_URL is
 # set) and the GitHub Container Registry. An unavailable registry never blocks
@@ -12,8 +29,9 @@
 # publishes immutable tags derived from the pinned Frappe version
 # (<version>, <version>-base, <version>-granian); the floating latest / base /
 # latest-granian only move from the default branch.
-# Finally, the published GHCR digests are attested (SLSA provenance + SPDX SBOM),
-# keylessly signed, and independently verified with a hard-fail gate.
+# Finally, the published GHCR digests are attested (SLSA provenance + one SPDX
+# SBOM per platform), keylessly signed, and independently verified with a
+# hard-fail gate.
 name: Build & Test Docker and Granian Images
 
 on:
@@ -73,16 +91,46 @@ concurrency:
 
 jobs:
   # STAGE 1: build base + latest, build latest-granian FROM the tested local
-  # latest, pre-validate each, then export the exact three images.
+  # latest, pre-validate each, then export the exact three images — once per
+  # architecture, natively.
   images:
-    name: 'Build + pre-validate base/latest/latest-granian'
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    name: 'Build + pre-validate ${{ matrix.arch }} base/latest/latest-granian'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
     permissions:
       contents: read
       # Push buildx layer-cache manifests to GHCR (frappe-buildcache).
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - arch: arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+    env:
+      # A buildx registry cache ref stores ONE platform, so every architecture
+      # gets its own ref (read by scripts/ci/common.sh:build_cache_ref).
+      BUILD_CACHE_TAG: main-${{ matrix.arch }}
     steps:
+      # Fail fast (and loudly) when the leg landed on the wrong runner: an
+      # arm64 leg on an x64 runner would silently emulate the whole bench build.
+      - name: Assert native architecture (no emulation)
+        run: |
+          set -euo pipefail
+          case "$(docker info --format '{{.Architecture}}')" in
+            x86_64 | amd64) have=amd64 ;;
+            aarch64 | arm64) have=arm64 ;;
+            *) have=unknown ;;
+          esac
+          if [ "$have" != "${{ matrix.arch }}" ]; then
+            echo "::error::runner architecture is ${have}, this leg builds ${{ matrix.arch }} — refusing to build under emulation"
+            echo "  amd64 leg -> blacksmith-4vcpu-ubuntu-2404; arm64 leg -> blacksmith-4vcpu-ubuntu-2404-arm"
+            exit 1
+          fi
+          echo "native ${{ matrix.arch }} runner confirmed"
       - name: Checkout patch repository with Frappe submodule
         uses: actions/checkout@v7
         with:
@@ -97,8 +145,14 @@ jobs:
             echo "IMAGE_CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "FRAPPE_SHA=$(git -C frappe rev-parse HEAD)"
           } >> "$GITHUB_ENV"
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      # Blacksmith's builder replaces docker/setup-buildx-action: same buildx
+      # commands, plus a sticky-disk layer cache keyed per architecture. The
+      # workflow still exports the per-arch registry cache below, so a cold
+      # sticky disk is never a cold `bench init`.
+      - name: Set up Docker Buildx (Blacksmith sticky-disk cache)
+        uses: useblacksmith/setup-docker-builder@v2
+        with:
+          cache-key: Dockerfile-${{ matrix.arch }}
       # Auth for the shared buildx registry-cache ref (ghcr.io/.../frappe-buildcache,
       # resolved by scripts/ci/common.sh:build_cache_ref). Override
       # BUILD_CACHE_REGISTRY only together with an extra login step for that registry.
@@ -130,40 +184,47 @@ jobs:
         run: bash scripts/ci/granian-build.sh
       - name: Pre-validate Granian installation and import
         run: bash scripts/ci/granian-verify.sh
-      - name: Export tested base/latest/latest-granian images
+      - name: Export tested ${{ matrix.arch }} base/latest/latest-granian images
         run: docker save frappe:latest frappe:base frappe-granian:latest | gzip -1 > /tmp/tested-images.tar.gz
       - name: Upload tested images
         uses: actions/upload-artifact@v7
         with:
-          name: tested-vanilla-and-granian-images
+          name: tested-images-${{ matrix.arch }}
           path: /tmp/tested-images.tar.gz
           retention-days: 1
 
   # STAGE 2: run the SAME common compose/OTEL/CRUD contract against all three
-  # variants. Consumes the exact archive; never rebuilds or pulls.
+  # variants on both architectures. Consumes the exact per-arch archive; never
+  # rebuilds or pulls.
   variant-matrix:
-    name: 'Matrix - common contract (${{ matrix.variant }})'
+    name: 'Matrix - common contract (${{ matrix.arch }}, ${{ matrix.variant }})'
     needs: images
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         variant: [base, latest, latest-granian]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - arch: arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
     steps:
       - name: Checkout scripts and compose resources
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
           submodules: false
-      - name: Download tested images
+      - name: Download tested ${{ matrix.arch }} images
         uses: actions/download-artifact@v8
         with:
-          name: tested-vanilla-and-granian-images
+          name: tested-images-${{ matrix.arch }}
           path: /tmp
       - name: Load tested images
         run: gunzip -c /tmp/tested-images.tar.gz | docker load
-      - name: Run common contract for ${{ matrix.variant }}
+      - name: Run common contract for ${{ matrix.variant }} on ${{ matrix.arch }}
         run: bash scripts/ci/matrix-variant-test.sh "${{ matrix.variant }}"
 
   # STAGE 2b: static application security testing. Semgrep is run against the
@@ -171,7 +232,7 @@ jobs:
   # OWASP Top 10 and CWE Top 25 rule packs. Runs independent of the image build.
   sast:
     name: 'SAST - Semgrep OWASP Top 10 + CWE Top 25'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     permissions:
       contents: read
@@ -195,7 +256,7 @@ jobs:
   # Trivy (no image required). Also independent of the image build.
   trivy-source:
     name: 'Security - Trivy source (deps, secrets, IaC)'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     permissions:
       contents: read
@@ -226,16 +287,26 @@ jobs:
           category: trivy-source-config
 
   # STAGE 2d: container image scan of the EXACT tested images (vuln, secrets,
-  # insecure config) before any publish. Consumes the same archive as the
-  # variant matrix; never rebuilds.
+  # insecure config) before any publish. Consumes the same per-arch archives as
+  # the variant matrix; never rebuilds. Both architectures are scanned, because
+  # a CVE can be arch-specific (different wheels, different binaries).
   trivy-images:
-    name: 'Security - Trivy images (vuln, secret, misconfig)'
+    name: 'Security - Trivy images ${{ matrix.arch }} (vuln, secret, misconfig)'
     needs: images
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: blacksmith-2vcpu-ubuntu-2404
+          - arch: arm64
+            runner: blacksmith-2vcpu-ubuntu-2404-arm
     env:
       # Report-only: scan and upload results, but do not fail the job/publish.
       SECURITY_FAIL_ON_FINDINGS: false
@@ -244,10 +315,10 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: false
-      - name: Download tested images
+      - name: Download tested ${{ matrix.arch }} images
         uses: actions/download-artifact@v8
         with:
-          name: tested-vanilla-and-granian-images
+          name: tested-images-${{ matrix.arch }}
           path: /tmp
       - name: Load tested images
         run: gunzip -c /tmp/tested-images.tar.gz | docker load
@@ -259,48 +330,56 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-results/trivy-image-frappe_latest.sarif
-          category: trivy-image-latest
+          category: trivy-image-latest-${{ matrix.arch }}
       - name: Upload Trivy image SARIF (base)
         if: always() && github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-results/trivy-image-frappe_base.sarif
-          category: trivy-image-base
+          category: trivy-image-base-${{ matrix.arch }}
       - name: Upload Trivy image SARIF (granian)
         if: always() && github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-results/trivy-image-frappe-granian_latest.sarif
-          category: trivy-image-granian
+          category: trivy-image-granian-${{ matrix.arch }}
 
-  # STAGE 3: publish only after every matrix entry AND every security scan passes,
-  # then verify digests.
-  # The tested images are promoted byte-for-byte to every configured registry:
-  # GitHub Container Registry (always) plus the optional primary registry. Each
-  # variant is published under its immutable release tag; the floating tags are
-  # advanced only from the default branch.
-  publish:
-    name: 'Publish release + moving tags and verify digests'
+  # STAGE 3a: push the EXACT tested images of ONE architecture as single-arch
+  # manifests. Nothing is rebuilt: `docker tag` + `docker push` from the tested
+  # archive. The arch-suffixed tags are permanent — the multi-arch index created
+  # in STAGE 3b references these manifests by digest, and the GHCR cleanup
+  # protects them via KEEP_TAG_PATTERN.
+  publish-arch:
+    name: 'Publish ${{ matrix.arch }} manifests'
     needs: [variant-matrix, sast, trivy-source, trivy-images]
     if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true)
-    outputs:
-      digests_json: ${{ steps.digests.outputs.digests_json }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
+    outputs:
+      frappe_version: ${{ steps.version.outputs.frappe_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - arch: arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
     steps:
       - name: Checkout patch repository
         uses: actions/checkout@v7
         with:
           submodules: false
-      - name: Download tested images
+      - name: Download tested ${{ matrix.arch }} images
         uses: actions/download-artifact@v8
         with:
-          name: tested-vanilla-and-granian-images
+          name: tested-images-${{ matrix.arch }}
           path: /tmp
       - name: Load tested images
         run: gunzip -c /tmp/tested-images.tar.gz | docker load
@@ -318,12 +397,132 @@ jobs:
           registry: ${{ env.SECONDARY_REGISTRY_URL }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish patched image (latest + <version>)
-        run: bash scripts/ci/publish-vanilla.sh
-      - name: Publish unpatched image (base + <version>-base)
-        run: bash scripts/ci/publish-base.sh
-      - name: Publish Granian image (latest-granian + <version>-granian)
-        run: bash scripts/ci/publish-granian.sh
+      # Both arch legs resolve the same pinned version; the merge job only needs
+      # one of them, so the duplicate output is intentional.
+      - name: Resolve pinned Frappe version
+        id: version
+        run: |
+          source scripts/ci/common.sh
+          echo "frappe_version=$(image_frappe_version frappe:latest)" >> "$GITHUB_OUTPUT"
+      - name: Publish ${{ matrix.arch }} base/latest/latest-granian manifests
+        run: |
+          set -euo pipefail
+          source scripts/ci/common.sh
+          require_registry
+          ARCH="${{ matrix.arch }}"
+          FRAPPE_VERSION="$(image_frappe_version frappe:latest)"
+          export FRAPPE_VERSION
+          # Guard the arch tags against a wrong runner label: the tested images
+          # must be the architecture this leg claims to publish.
+          for image in frappe:base frappe:latest frappe-granian:latest; do
+            have="$(docker image inspect -f '{{.Architecture}}' "$image")"
+            case "$have" in x86_64) have=amd64 ;; aarch64) have=arm64 ;; esac
+            if [ "$have" != "$ARCH" ]; then
+              echo "::error::${image} is ${have}, refusing to publish it as ${ARCH}"
+              exit 1
+            fi
+          done
+          if [ "${PUBLISH_MOVING_TAGS}" = "1" ]; then
+            publish_all frappe:base "frappe:base-${ARCH}"
+            publish_all frappe:latest "frappe:latest-${ARCH}"
+            publish_all frappe-granian:latest "frappe:latest-granian-${ARCH}"
+          fi
+          publish_all frappe:base "frappe:${FRAPPE_VERSION}-base-${ARCH}"
+          publish_all frappe:latest "frappe:${FRAPPE_VERSION}-${ARCH}"
+          publish_all frappe-granian:latest "frappe:${FRAPPE_VERSION}-granian-${ARCH}"
+
+  # STAGE 3b: fold the two single-arch manifests into one multi-arch index per
+  # published tag, in every configured registry. `imagetools create` only writes
+  # the index that points at the already-pushed child manifests: the tested bytes
+  # are never rebuilt or re-pushed, so each platform keeps its exact digest.
+  publish:
+    name: 'Merge multi-arch indexes and verify digests'
+    needs: publish-arch
+    if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true)
+    outputs:
+      digests_json: ${{ steps.digests.outputs.digests_json }}
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      FRAPPE_VERSION: ${{ needs.publish-arch.outputs.frappe_version }}
+    steps:
+      - name: Checkout patch repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+      - name: Login to the primary registry
+        if: env.REGISTRY_URL != ''
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY_URL }}
+          username: ${{ secrets.REGISTRY_USERNAME || secrets.DIGITALOCEAN_EMAIL }}
+          password: ${{ secrets.REGISTRY_PASSWORD || secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      - name: Login to GitHub Container Registry
+        if: env.SECONDARY_REGISTRY_URL != ''
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.SECONDARY_REGISTRY_URL }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge and assert multi-arch indexes
+        run: |
+          set -euo pipefail
+          source scripts/ci/common.sh
+          require_registry
+          : "${FRAPPE_VERSION:?FRAPPE_VERSION required (publish-arch output)}"
+
+          tags=()
+          if [ "${PUBLISH_MOVING_TAGS}" = "1" ]; then
+            tags+=(base latest latest-granian)
+          fi
+          tags+=("${FRAPPE_VERSION}-base" "${FRAPPE_VERSION}" "${FRAPPE_VERSION}-granian")
+
+          registries=()
+          for reg in "$(primary_registry)" "$(secondary_registry)"; do
+            [ -n "$reg" ] && registries+=("$reg")
+          done
+          [ "${#registries[@]}" -gt 0 ] || { echo "::error::no registry configured"; exit 1; }
+
+          for reg in "${registries[@]}"; do
+            for tag in "${tags[@]}"; do
+              ref="${reg}/frappe:${tag}"
+              echo "Merging ${ref} <- ${tag}-amd64 + ${tag}-arm64"
+              docker buildx imagetools create -t "$ref" \
+                "${reg}/frappe:${tag}-amd64" \
+                "${reg}/frappe:${tag}-arm64"
+            done
+          done
+
+          # Assert every published tag is a two-platform index whose children are
+          # EXACTLY the arch manifests this run pushed (not a stale cache hit).
+          for reg in "${registries[@]}"; do
+            for tag in "${tags[@]}"; do
+              ref="${reg}/frappe:${tag}"
+              platforms="$(docker buildx imagetools inspect "$ref" \
+                --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}')"
+              echo "${ref}: ${platforms}"
+              for want in linux/amd64 linux/arm64; do
+                case " ${platforms} " in
+                  *" ${want} "*) ;;
+                  *) echo "::error::${ref} is not a multi-arch index with ${want}"; exit 1 ;;
+                esac
+              done
+              for arch in amd64 arm64; do
+                child="$(docker buildx imagetools inspect "$ref" \
+                  --format "{{range .Manifest.Manifests}}{{if eq .Platform.Architecture \"${arch}\"}}{{.Digest}}{{end}}{{end}}")"
+                child="${child#sha256:}"
+                arch_digest="$(imagetools_digest "${reg}/frappe:${tag}-${arch}")"
+                if [ "sha256:${child}" != "${arch_digest}" ]; then
+                  echo "::error::${ref} ${arch} child (sha256:${child}) is not ${tag}-${arch} (${arch_digest})"
+                  exit 1
+                fi
+              done
+            done
+          done
+          echo "OK: multi-arch indexes cover ${#tags[@]} tags in ${#registries[@]} registries"
       - name: Verify published tags have distinct digests
         run: bash scripts/ci/publish-verify.sh
       - name: Resolve published GHCR digests
@@ -331,13 +530,14 @@ jobs:
         run: bash scripts/ci/supply-chain-digests.sh
 
   # STAGE 4: bind supply-chain metadata to the EXACT published GHCR digests. One
-  # matrix entry per variant: generate an SPDX SBOM, attach SLSA build provenance
-  # + SPDX SBOM attestations (both pushed to the registry), then keylessly sign
-  # the image digest. Attestations and signatures live in GHCR only.
+  # matrix entry per variant: generate one SPDX SBOM PER PLATFORM, attach SLSA
+  # build provenance + both SBOM attestations (pushed to the registry), then
+  # keylessly sign the multi-arch index digest. Attestations and signatures live
+  # in GHCR only.
   attest:
     name: 'Attest + sign ${{ matrix.variant }}'
     needs: publish
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 45
     permissions:
       contents: read
@@ -379,22 +579,35 @@ jobs:
         run: bash scripts/ci/install-cosign.sh
       - name: Install syft
         run: bash scripts/ci/install-syft.sh
-      - name: Generate SPDX SBOM
+      # The published tag is an index, so syft must be told which platform to
+      # describe; one SBOM per platform keeps the attestation honest for arm64.
+      - name: Generate SPDX SBOM (linux/amd64)
         env:
           IMAGE_REF: ${{ steps.subject.outputs.ref }}
-        run: syft "$IMAGE_REF" -o spdx-json=sbom.spdx.json
+        run: syft --platform linux/amd64 -o spdx-json=sbom-amd64.spdx.json "$IMAGE_REF"
+      - name: Generate SPDX SBOM (linux/arm64)
+        env:
+          IMAGE_REF: ${{ steps.subject.outputs.ref }}
+        run: syft --platform linux/arm64 -o spdx-json=sbom-arm64.spdx.json "$IMAGE_REF"
       - name: Attest build provenance
         uses: actions/attest@v4.2.2
         with:
           subject-name: ${{ steps.subject.outputs.image }}
           subject-digest: ${{ steps.subject.outputs.digest }}
           push-to-registry: true
-      - name: Attest SPDX SBOM
+      - name: Attest SPDX SBOM (linux/amd64)
         uses: actions/attest@v4.2.2
         with:
           subject-name: ${{ steps.subject.outputs.image }}
           subject-digest: ${{ steps.subject.outputs.digest }}
-          sbom-path: sbom.spdx.json
+          sbom-path: sbom-amd64.spdx.json
+          push-to-registry: true
+      - name: Attest SPDX SBOM (linux/arm64)
+        uses: actions/attest@v4.2.2
+        with:
+          subject-name: ${{ steps.subject.outputs.image }}
+          subject-digest: ${{ steps.subject.outputs.digest }}
+          sbom-path: sbom-arm64.spdx.json
           push-to-registry: true
       - name: Sign image digest (keyless)
         run: cosign sign --yes "${{ steps.subject.outputs.ref }}"
@@ -405,7 +618,7 @@ jobs:
   verify:
     name: 'Verify signatures and attestations'
     needs: [publish, attest]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     permissions:
       contents: read

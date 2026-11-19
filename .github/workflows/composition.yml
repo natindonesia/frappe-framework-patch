@@ -39,7 +39,8 @@ env:
 jobs:
   build:
     name: Compose build, up & smoke test
-    runs-on: ubuntu-latest
+    # Docker builds + a full 8-service stack: 4 vCPU / 8 GB.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     if: >-
       github.event_name != 'registry_package' ||
       github.event.package.name == 'frappe'
