@@ -323,9 +323,13 @@ overlays).
   `upstream-full-suite` then runs the complete upstream suite (~4k tests) with
   `bench run-parallel-tests`, split into four weighted shards on both the
   gunicorn (`latest`) and Granian (`latest-granian`) images, with a
-  compose-network SMTP sink (`mailpit`) for mail tests. A separate
-  `patch-tests` job runs this repository's Python unittest suite (patch
-  applicability, markers, workflow structure). Publish is gated on all three.
+  compose-network SMTP sink (`mailpit`) for mail tests. It is **advisory**:
+  the production runtime image lacks dev-parity bits (`.git` in `apps/frappe`,
+  `developer_mode=0`), and the same failures reproduce on the unpatched
+  `frappe:base` image, so it must not block publish until those gaps close. A
+  separate `patch-tests` job runs this repository's Python unittest suite
+  (patch applicability, markers, workflow structure). Publish is gated on the
+  targeted suite, patch tests, static analysis, and the per-variant matrix.
 - `cleanup-ghcr-versions.yml` — daily prune of stale GHCR package versions
   (keeps current-release digests, per-arch children, signatures, and
   attestations).
