@@ -122,7 +122,7 @@ index 1a10b559e5..e4898778b0 100644
  	disable_user,
  	_use,
 diff --git a/frappe/commands/test_commands.py b/frappe/commands/test_commands.py
-index 971fa81c18..4fec86d47f 100644
+index 971fa81c18..81ac99b7f1 100644
 --- a/frappe/commands/test_commands.py
 +++ b/frappe/commands/test_commands.py
 @@ -456,20 +456,32 @@ class TestCommands(BaseTestCommands):
@@ -148,7 +148,7 @@ index 971fa81c18..4fec86d47f 100644
 +		self.assertNotEqual(self.returncode, 0)
 +		self.assertEqual(check_password("Administrator", original_password), "Administrator")
 +
-+		self.execute("bench --site {site} set-password Administrator {}".format(strong_password))
++		self.execute("bench --site {site} set-password Administrator " + strong_password)
  		self.assertEqual(self.returncode, 0)
 -		self.assertEqual(check_password("Administrator", "test2"), "Administrator")
 +		self.assertEqual(check_password("Administrator", strong_password), "Administrator")
@@ -156,7 +156,7 @@ index 971fa81c18..4fec86d47f 100644
 -		# Reset it back to original password
 -		original_password = frappe.conf.admin_password or "admin"
 -		self.execute("bench --site {{site}} set-admin-password {}".format(original_password))
-+		self.execute("bench --site {site} set-admin-password {}".format(other_strong_password))
++		self.execute("bench --site {site} set-admin-password " + other_strong_password)
  		self.assertEqual(self.returncode, 0)
 +		self.assertEqual(check_password("Administrator", other_strong_password), "Administrator")
 +
