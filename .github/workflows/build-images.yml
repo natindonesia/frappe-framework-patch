@@ -290,13 +290,19 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/ci/common.sh
-          # Faker is part of Frappe's `test` extra (pyproject.toml). The runtime
-          # image only installs production requirements, so `frappe.mock()` and
-          # the tests that use it need it installed here.
+          # The runtime image only installs production requirements. These are
+          # Frappe's own `test`/`dev` extras needed by the suite (faker,
+          # hypothesis, freezegun, responses, xmlrunner, pyngrok).
           compose exec -T web bash -lc '
             set -e
             cd /home/frappe/frappe-bench
-            ./env/bin/pip install --quiet "Faker~=18.10.1"
+            ./env/bin/pip install --quiet \
+              "Faker~=18.10.1" \
+              "hypothesis~=6.77.0" \
+              "freezegun~=1.5.1" \
+              "responses==0.23.1" \
+              "unittest-xml-reporting~=3.2.0" \
+              "pyngrok~=7.5.0"
           '
       - name: Configure test site for upstream tests
         run: |
@@ -404,11 +410,19 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/ci/common.sh
-          # Faker is part of Frappe's `test` extra and is needed by frappe.mock().
+          # The runtime image only installs production requirements. These are
+          # Frappe's own `test`/`dev` extras needed by the suite (faker,
+          # hypothesis, freezegun, responses, xmlrunner, pyngrok).
           compose exec -T web bash -lc '
             set -e
             cd /home/frappe/frappe-bench
-            ./env/bin/pip install --quiet "Faker~=18.10.1"
+            ./env/bin/pip install --quiet \
+              "Faker~=18.10.1" \
+              "hypothesis~=6.77.0" \
+              "freezegun~=1.5.1" \
+              "responses==0.23.1" \
+              "unittest-xml-reporting~=3.2.0" \
+              "pyngrok~=7.5.0"
           '
       - name: Configure test site for upstream tests
         run: |
