@@ -349,7 +349,104 @@ jobs:
           source scripts/ci/common.sh
           bash scripts/ci/compose-teardown.sh
 
-  # STAGE 2c: the patch repository's own tests. These are Python unittest
+  # STAGE 2c: the FULL upstream Frappe test suite (~4k tests), sharded 4 ways
+  # and run against both served variants. Same tested image archive as the
+  # matrix; shards are file-list partitions of `run-parallel-tests`
+  # (--build-number i of --total-builds 4), so each shard gets a disjoint set.
+  upstream-full-suite:
+    name: 'Upstream Frappe suite (${{ matrix.variant }}, shard ${{ matrix.shard }}/4)'
+    needs: images
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [latest, latest-granian]
+        shard: [1, 2, 3, 4]
+    env:
+      CI_PROJECT: ci-upstream-${{ matrix.variant }}-${{ matrix.shard }}
+      FRAPPE_TEST_IMAGE: ${{ matrix.variant == 'latest-granian' && 'frappe-granian:latest' || 'frappe:latest' }}
+      EXTRA_FILES: ${{ matrix.variant == 'latest-granian' && 'resources/compose.variant-ci.yml resources/compose.upstream-ci.yml resources/compose.granian-ci.yml' || 'resources/compose.variant-ci.yml resources/compose.upstream-ci.yml' }}
+      HTTP_PORT: 18089
+      SITE_NAME: crm.localhost
+      ADMIN_PASSWORD: admin
+      MYSQL_ROOT_PASSWORD: admin
+      DEVELOPER_MODE: "1"
+      CI_WAIT_ROUNDS: ${{ matrix.variant == 'latest-granian' && 120 || 60 }}
+    steps:
+      - name: Checkout compose resources and CI helpers
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          submodules: false
+      - name: Download tested amd64 images
+        uses: actions/download-artifact@v8
+        with:
+          name: tested-images-amd64
+          path: /tmp
+      - name: Load tested images
+        run: gunzip -c /tmp/tested-images.tar.gz | docker load
+      - name: Start test stack
+        run: |
+          set -euo pipefail
+          source scripts/ci/common.sh
+          bash scripts/ci/compose-cleanup.sh -v
+          bash scripts/ci/compose-start-deps.sh
+          bash scripts/ci/compose-init.sh
+          bash scripts/ci/compose-start-stack.sh
+          # The SMTP sink only exists in the upstream-suite overlay, so it is
+          # not part of the shared stack script.
+          compose up -d mailpit
+          bash scripts/ci/compose-wait-web.sh
+      - name: Install upstream test dependencies
+        run: |
+          set -euo pipefail
+          source scripts/ci/common.sh
+          # Faker is part of Frappe's `test` extra and is needed by frappe.mock().
+          compose exec -T web bash -lc '
+            set -e
+            cd /home/frappe/frappe-bench
+            ./env/bin/pip install --quiet "Faker~=18.10.1"
+          '
+      - name: Configure test site for upstream tests
+        run: |
+          set -euo pipefail
+          source scripts/ci/common.sh
+          # Same shape as Frappe's own CI: HTTP tests need a reachable
+          # host_name, mail tests need the compose-network SMTP sink, and CLI
+          # tests need allow_tests/root_*.
+          compose exec -T web bash -lc '
+            set -e
+            cd /home/frappe/frappe-bench
+            bench --site crm.localhost set-config allow_tests 1 --parse
+            bench --site crm.localhost set-config server_script_enabled 1 --parse
+            bench --site crm.localhost set-config host_name "http://crm.localhost:8000"
+            bench --site crm.localhost set-config auto_email_id "test@example.com"
+            bench --site crm.localhost set-config mail_server mailpit
+            bench --site crm.localhost set-config mail_port 1025 --parse
+            bench --site crm.localhost set-config mail_login "test@example.com"
+            bench --site crm.localhost set-config mail_password admin
+            bench --site crm.localhost set-config admin_password admin
+            bench --site crm.localhost set-config root_login root
+            bench --site crm.localhost set-config root_password admin
+          '
+      - name: Run upstream Frappe suite shard ${{ matrix.shard }}/4
+        run: |
+          set -euo pipefail
+          source scripts/ci/common.sh
+          # CI=1 makes the parallel runner exit non-zero on failures.
+          compose exec -T web bash -lc \
+            "cd /home/frappe/frappe-bench && CI=1 bench --site crm.localhost run-parallel-tests --app frappe --build-number ${{ matrix.shard }} --total-builds 4"
+      - name: Tear down test stack
+        if: always()
+        run: |
+          set -euo pipefail
+          source scripts/ci/common.sh
+          bash scripts/ci/compose-teardown.sh
+
+  # STAGE 2d: the patch repository's own tests. These are Python unittest
   # checks (patch applicability, markers, workflow structure), not bench tests.
   patch-tests:
     name: 'Patch-layer tests'
@@ -371,7 +468,7 @@ jobs:
       - name: Run patch-layer tests
         run: python -m unittest discover -s tests -p 'test_*.py' -t . -v
 
-  # STAGE 2d: static analysis of the owned surface, independent of the image
+  # STAGE 2e: static analysis of the owned surface, independent of the image
   # build. Semgrep (OWASP Top 10 + CWE Top 25) still FAILS the job on
   # ERROR-severity findings; the Trivy source scan is report-only and runs even
   # when Semgrep fails, so neither result hides the other.
@@ -424,7 +521,7 @@ jobs:
   # protects them via KEEP_TAG_PATTERN.
   publish-arch:
     name: 'Publish ${{ matrix.arch }} manifests'
-    needs: [variant-matrix, upstream-tests, patch-tests, static-analysis]
+    needs: [variant-matrix, upstream-tests, upstream-full-suite, patch-tests, static-analysis]
     if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true)
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45

@@ -318,9 +318,14 @@ overlays).
   rebuilt, and their digests are asserted against the pushed arch tags.
   A dedicated `upstream-tests` job runs Frappe's own `bench run-tests` modules
   (`test_password`, `test_password_strength`, `user/test_user`, and
-  `TestCommands.test_set_password`) against the patched `latest` image. A
-  separate `patch-tests` job runs this repository's Python unittest suite
-  (patch applicability, markers, workflow structure). Publish is gated on both.
+  `TestCommands.test_set_password`) against the patched `latest` image — the
+  fast signal for the auth/password/CLI surface this repository patches.
+  `upstream-full-suite` then runs the complete upstream suite (~4k tests) with
+  `bench run-parallel-tests`, split into four weighted shards on both the
+  gunicorn (`latest`) and Granian (`latest-granian`) images, with a
+  compose-network SMTP sink (`mailpit`) for mail tests. A separate
+  `patch-tests` job runs this repository's Python unittest suite (patch
+  applicability, markers, workflow structure). Publish is gated on all three.
 - `cleanup-ghcr-versions.yml` — daily prune of stale GHCR package versions
   (keeps current-release digests, per-arch children, signatures, and
   attestations).

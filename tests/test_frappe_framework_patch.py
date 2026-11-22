@@ -416,6 +416,20 @@ class WorkflowStructureTests(unittest.TestCase):
             "publish must be gated behind the patch-layer test job",
         )
 
+    def test_upstream_full_suite_is_sharded_and_gates_publish(self):
+        job = self.workflow["jobs"]["upstream-full-suite"]
+        matrix = job["strategy"]["matrix"]
+        self.assertEqual(matrix["shard"], [1, 2, 3, 4])
+        self.assertIn("latest-granian", matrix["variant"])
+        self.assertIn("latest", matrix["variant"])
+        steps = "\n".join(s.get("run", "") for s in job["steps"])
+        self.assertIn("run-parallel-tests --app frappe", steps)
+        self.assertIn("--total-builds 4", steps)
+        self.assertIn(
+            "upstream-full-suite", self.workflow["jobs"]["publish-arch"]["needs"],
+            "publish must be gated behind the full upstream Frappe suite",
+        )
+
     def test_images_job_builds_all_three_and_granian_from_latest(self):
         job = self.workflow["jobs"]["images"]
         steps = "\n".join(s.get("run", "") for s in job["steps"])

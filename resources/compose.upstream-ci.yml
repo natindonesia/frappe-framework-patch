@@ -1,0 +1,14 @@
+# CI-only overlay for the full upstream Frappe test suite.
+#
+# Frappe's own test workflow runs a local SMTP sink (smtp4dev) because parts of
+# the suite exercise outgoing mail end to end. The runtime image has no mail
+# server, so add one on the compose network and point the test site at it.
+#
+# Usage: appended AFTER resources/compose.variant-ci.yml:
+#   docker compose -p ci-upstream-full -f docker-compose.yml \
+#     -f resources/compose.ci.yml \
+#     -f resources/compose.variant-ci.yml \
+#     -f resources/compose.upstream-ci.yml up -d
+services:
+  mailpit:
+    image: axllent/mailpit:latest
