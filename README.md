@@ -161,8 +161,9 @@ The WSGI entrypoint is unchanged — Granian is a pure server swap.
 1. Points the bench at the `mariadb` / `redis` service names.
 2. First run: `bench new-site` with `--mariadb-user-host-login-scope='%'` —
    the DB user gets a wildcard host grant so horizontally scaled web/worker
-   replicas can all connect — then installs any apps present in the bench,
-   sets `developer_mode 1`, and runs `/scripts/fix-db-users.sh`.
+   replicas can all connect — then installs any apps present in the bench.
+   If `DEVELOPER_MODE=1`, developer mode is set bench-wide before site creation;
+   finally runs `/scripts/fix-db-users.sh`.
 3. Subsequent runs: re-runs `fix-db-users.sh` and `bench --site all migrate`.
 
 No asset manifest is involved: bundle filenames are unhashed (see
@@ -175,7 +176,8 @@ No asset manifest is involved: bundle filenames are unhashed (see
 |---|---|---|---|
 | `SITE_NAME` | init, nginx | `crm.localhost` | Site to create / route to. |
 | `MYSQL_ROOT_PASSWORD` | init, mariadb | `admin` | MariaDB root password. |
-| `ADMIN_PASSWORD` | init | `admin` | Site Administrator password. |
+| `ADMIN_PASSWORD` | init | `admin` | Site Administrator password. A weak value is allowed only in developer mode. |
+| `DEVELOPER_MODE` | init | `1` in compose | Enable Frappe developer mode before site creation. Set `0` for hosted production. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | web, workers, scheduler, socketio, nginx | *(empty = tracing off)* | OTLP HTTP endpoint, e.g. `http://otel-collector:4318`. Tracing is opt-in: unset means nothing is traced. |
 | `FRAPPE_DISABLE_OTEL` | any | *(unset)* | Force-disable tracing even when the endpoint is set. |
 | `OTEL_SERVICE_NAME` | traced roles | role-specific | Span service name. |
@@ -187,6 +189,21 @@ No asset manifest is involved: bundle filenames are unhashed (see
 | `UPSTREAM_REAL_IP_ADDRESS` | nginx | `127.0.0.1` | Trusted proxy for real-IP restoration. |
 | `FRAPPE_BUILD_VERSION` | web, workers | `$IMAGE_VERSION` | Cache-busting suffix appended to asset URLs. Bundle filenames are unhashed, so assets are versioned per release instead of by content hash. |
 | `HTTP_PORT` | compose | `8085` | Host port published for nginx. |
+
+> **Administrator password policy:** local compose defaults (`DEVELOPER_MODE=1`,
+> `ADMIN_PASSWORD=admin`) exist to keep developer setup frictionless. Hosted
+> production must set `DEVELOPER_MODE=0` and a strong `ADMIN_PASSWORD`; site
+> creation refuses a weak Administrator password outside developer mode.
+> `bench set-admin-password` and `bench set-password ... Administrator` always
+> reject common or low-score passwords, regardless of developer mode. Do not
+> enable `Server Script` with a weak Administrator password.
+>
+> The Administrator account can be login-disabled only when
+> `allow_disable_administrator` is set in site config:
+> `bench --site <site> set-config allow_disable_administrator 1`, then
+> `bench --site <site> disable-administrator`. Recover with
+> `bench --site <site> enable-administrator`. Internal code running as
+> Administrator (`set_user`, scheduler, migrations) is unaffected.
 
 The compose `otel-collector` service (always running, receives OTLP on
 `4317`/`4318`) is configured with `OTEL_COLLECTOR_CONFIG_URI`,
@@ -299,6 +316,11 @@ overlays).
   registry `${REGISTRY_URL}/${REGISTRY_NAMESPACE}/frappe:*` when configured).
   The merge only rewrites the index — the tested per-arch bytes are never
   rebuilt, and their digests are asserted against the pushed arch tags.
+  A dedicated `upstream-tests` job runs Frappe's own `bench run-tests` modules
+  (`test_password`, `test_password_strength`, `user/test_user`, and
+  `TestCommands.test_set_password`) against the patched `latest` image. A
+  separate `patch-tests` job runs this repository's Python unittest suite
+  (patch applicability, markers, workflow structure). Publish is gated on both.
 - `cleanup-ghcr-versions.yml` — daily prune of stale GHCR package versions
   (keeps current-release digests, per-arch children, signatures, and
   attestations).

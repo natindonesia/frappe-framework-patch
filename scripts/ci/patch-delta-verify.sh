@@ -15,6 +15,8 @@
 #                                               -> base PRESENT, latest ABSENT
 #   0006-realtime-backend-url-and-origin-handling.patch ADDS "FRAPPE_BACKEND_URL" to realtime/utils.js
 #                                               -> base ABSENT,  latest PRESENT
+#   0009-administrator-account-hardening.patch  ADDS Administrator password policy
+#                                               -> base ABSENT,  latest PRESENT
 set -euo pipefail
 # shellcheck source=scripts/ci/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -79,6 +81,10 @@ check frappe:latest no  esbuild/esbuild.js "get_assets_json_path_and_obj" 0007-d
 # 0008-api-key-auth-caching-with-revocation.patch
 check frappe:base   no  frappe/auth.py "api_auth_cache:" 0008-api-key-auth-caching-with-revocation.patch
 check frappe:latest yes frappe/auth.py "api_auth_cache:" 0008-api-key-auth-caching-with-revocation.patch
+
+# 0009-administrator-account-hardening.patch
+check frappe:base   no  frappe/utils/password.py "validate_administrator_password" 0009-administrator-account-hardening.patch
+check frappe:latest yes frappe/utils/password.py "validate_administrator_password" 0009-administrator-account-hardening.patch
 
 # Guard against empty-marker accidents: every removal marker MUST really exist
 # in the pristine base (checked above via "yes") and every added marker MUST

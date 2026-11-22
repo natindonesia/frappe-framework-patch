@@ -22,6 +22,13 @@ bench set-redis-cache-host redis://redis:6379
 bench set-redis-queue-host redis://redis:6379
 bench set-redis-socketio-host redis://redis:6379
 
+# Local development benches may use a weak Administrator password. Set this
+# before new-site so the install check can see it. Production deployments must
+# leave DEVELOPER_MODE unset/0 and provide a strong ADMIN_PASSWORD.
+if [ "${DEVELOPER_MODE:-0}" = "1" ]; then
+  bench set-config --global developer_mode 1
+fi
+
 # Bench-wide app list derived from what is actually in the bench
 # (the bench contains only frappe; other apps may or may not be present).
 ls -1 apps > sites/apps.txt
@@ -42,7 +49,6 @@ if [ ! -d "sites/${SITE_NAME}" ]; then
     bench --site "${SITE_NAME}" install-app crm
   fi
 
-  bench --site "${SITE_NAME}" set-config developer_mode 1
   bash "$FIX_DB_USERS"
 else
   bash "$FIX_DB_USERS"

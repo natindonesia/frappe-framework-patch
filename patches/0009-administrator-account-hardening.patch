@@ -1,0 +1,377 @@
+diff --git a/frappe/auth.py b/frappe/auth.py
+index 7c1605f2d4..50b3f70553 100644
+--- a/frappe/auth.py
++++ b/frappe/auth.py
+@@ -283,7 +283,7 @@ class LoginManager:
+ 			user_tracker.add_failure_attempt()
+ 			ip_tracker and ip_tracker.add_failure_attempt()
+ 			self.fail("Invalid login credentials", user=user.name)
+-		elif not (user.name == "Administrator" or user.enabled):
++		elif not user.enabled:
+ 			user_tracker.add_failure_attempt()
+ 			ip_tracker and ip_tracker.add_failure_attempt()
+ 			self.fail("User disabled or missing", user=user.name)
+diff --git a/frappe/commands/site.py b/frappe/commands/site.py
+index 1a10b559e5..e4898778b0 100644
+--- a/frappe/commands/site.py
++++ b/frappe/commands/site.py
+@@ -11,7 +11,7 @@ import click
+ import frappe
+ from frappe.commands import get_site, pass_context
+ from frappe.exceptions import SiteNotSpecifiedError
+-from frappe.utils import CallbackManager
++from frappe.utils import CallbackManager, cint
+ from frappe.utils.bench_helper import CliCtxObj
+ 
+ 
+@@ -1104,6 +1104,77 @@ def set_admin_password(context: CliCtxObj, admin_password=None, logout_all_sessi
+ 		set_user_password(site, "Administrator", admin_password, logout_all_sessions)
+ 
+ 
++def _has_other_enabled_system_manager() -> bool:
++	users = frappe.get_all(
++		"Has Role",
++		filters={"role": "System Manager", "parenttype": "User", "parent": ("!=", "Administrator")},
++		pluck="parent",
++		distinct=True,
++	)
++	return any(frappe.db.get_value("User", user, "enabled") for user in users)
++
++
++@click.command("disable-administrator")
++@click.option(
++	"--force",
++	is_flag=True,
++	default=False,
++	help="Disable even if there is no other enabled System Manager",
++)
++@pass_context
++def disable_administrator(context: CliCtxObj, force=False):
++	"Disable the Administrator account for a site"
++	site = get_site(context)
++	with frappe.init_site(site):
++		frappe.connect()
++		if not cint(frappe.conf.get("allow_disable_administrator")):
++			click.secho(
++				"Administrator cannot be disabled unless allow_disable_administrator "
++				"is enabled in the site config.",
++				fg="red",
++			)
++			sys.exit(1)
++
++		if not force and not _has_other_enabled_system_manager():
++			click.secho(
++				"Refusing to disable Administrator: no other enabled System Manager exists. "
++				"Use --force to override.",
++				fg="red",
++			)
++			sys.exit(1)
++
++		api_key = frappe.db.get_value("User", "Administrator", "api_key")
++		frappe.db.set_value(
++			"User",
++			"Administrator",
++			{"enabled": 0, "reset_password_key": ""},
++		)
++		frappe.clear_cache(user="Administrator")
++
++		if api_key:
++			frappe.cache.delete_value(f"api_auth_cache:{api_key}")
++		frappe.cache.delete_value("user_api_key:Administrator")
++
++		from frappe.sessions import clear_sessions
++
++		clear_sessions(user="Administrator", force=True)
++		frappe.db.commit()
++		click.secho("Administrator disabled.", fg="green")
++
++
++@click.command("enable-administrator")
++@pass_context
++def enable_administrator(context: CliCtxObj):
++	"Enable the Administrator account for a site"
++	site = get_site(context)
++	with frappe.init_site(site):
++		frappe.connect()
++		frappe.db.set_value("User", "Administrator", "enabled", 1)
++		frappe.clear_cache(user="Administrator")
++		frappe.db.commit()
++		click.secho("Administrator enabled.", fg="green")
++
++
+ def set_user_password(site, user, password, logout_all_sessions=False):
+ 	import getpass
+ 
+@@ -1123,6 +1194,9 @@ def set_user_password(site, user, password, logout_all_sessions=False):
+ 		update_password(user=user, pwd=password, logout_all_sessions=logout_all_sessions)
+ 		frappe.db.set_value("User", user, "last_password_reset_date", frappe.utils.today())
+ 		frappe.db.commit()
++	except frappe.ValidationError as e:
++		click.secho(str(e), fg="red")
++		sys.exit(1)
+ 	finally:
+ 		frappe.destroy()
+ 
+@@ -1645,6 +1719,8 @@ commands = [
+ 	run_patch,
+ 	set_password,
+ 	set_admin_password,
++	disable_administrator,
++	enable_administrator,
+ 	uninstall,
+ 	disable_user,
+ 	_use,
+diff --git a/frappe/commands/test_commands.py b/frappe/commands/test_commands.py
+index 971fa81c18..4fec86d47f 100644
+--- a/frappe/commands/test_commands.py
++++ b/frappe/commands/test_commands.py
+@@ -456,20 +456,32 @@ class TestCommands(BaseTestCommands):
+ 		self.assertEqual(self.returncode, 2)
+ 
+ 	def test_set_password(self):
+-		from frappe.utils.password import check_password
++		from frappe.utils.password import check_password, update_password
+ 
++		original_password = frappe.conf.admin_password or "admin"
++		strong_password = "Admin-Test-9f3K!"
++		other_strong_password = "Admin-Test-9f3K!2"
++
++		# Common/weak passwords must be rejected for Administrator.
+ 		self.execute("bench --site {site} set-password Administrator test1")
+-		self.assertEqual(self.returncode, 0)
+-		self.assertEqual(check_password("Administrator", "test1"), "Administrator")
++		self.assertNotEqual(self.returncode, 0)
++		self.assertEqual(check_password("Administrator", original_password), "Administrator")
+ 
+-		self.execute("bench --site {site} set-admin-password test2")
++		self.execute("bench --site {site} set-admin-password admin")
++		self.assertNotEqual(self.returncode, 0)
++		self.assertEqual(check_password("Administrator", original_password), "Administrator")
++
++		self.execute("bench --site {site} set-password Administrator {}".format(strong_password))
+ 		self.assertEqual(self.returncode, 0)
+-		self.assertEqual(check_password("Administrator", "test2"), "Administrator")
++		self.assertEqual(check_password("Administrator", strong_password), "Administrator")
+ 
+-		# Reset it back to original password
+-		original_password = frappe.conf.admin_password or "admin"
+-		self.execute("bench --site {{site}} set-admin-password {}".format(original_password))
++		self.execute("bench --site {site} set-admin-password {}".format(other_strong_password))
+ 		self.assertEqual(self.returncode, 0)
++		self.assertEqual(check_password("Administrator", other_strong_password), "Administrator")
++
++		# Reset it back to original password. The original may itself be weak
++		# (developer-mode installs), so bypass policy validation here.
++		update_password("Administrator", original_password, validate=False)
+ 		self.assertEqual(check_password("Administrator", original_password), "Administrator")
+ 
+ 	@skipIf(
+diff --git a/frappe/core/doctype/user/user.py b/frappe/core/doctype/user/user.py
+index 4ff8597e0a..10f2dd8273 100644
+--- a/frappe/core/doctype/user/user.py
++++ b/frappe/core/doctype/user/user.py
+@@ -380,14 +380,27 @@ class User(Document):
+ 		self.full_name = " ".join(p for p in [self.first_name, self.middle_name, self.last_name] if p)
+ 
+ 	def check_enable_disable(self):
+-		# do not allow disabling administrator/guest
+-		if not cint(self.enabled) and self.name in STANDARD_USERS:
++		# do not allow disabling administrator/guest unless explicitly enabled for admin
++		allow_disable_administrator = self.name == "Administrator" and cint(
++			frappe.conf.get("allow_disable_administrator")
++		)
++		if (
++			not cint(self.enabled)
++			and self.name in STANDARD_USERS
++			and not allow_disable_administrator
++		):
+ 			frappe.throw(_("User {0} cannot be disabled").format(self.name))
+ 
+ 		# clear sessions if disabled
+ 		if not cint(self.enabled) and getattr(frappe.local, "login_manager", None):
+ 			frappe.local.login_manager.logout(user=self.name)
+ 
++		if not cint(self.enabled) and self.name == "Administrator":
++			self.reset_password_key = ""
++			if self.api_key:
++				frappe.cache.delete_value(f"api_auth_cache:{self.api_key}")
++			frappe.cache.delete_value("user_api_key:Administrator")
++
+ 		# toggle notifications based on the user's status
+ 		toggle_notifications(self.name, enable=cint(self.enabled), ignore_permissions=True)
+ 		self.disable_email_fields_if_user_disabled()
+diff --git a/frappe/tests/test_password.py b/frappe/tests/test_password.py
+index 098ce36d07..cb3d6b9d07 100644
+--- a/frappe/tests/test_password.py
++++ b/frappe/tests/test_password.py
+@@ -4,7 +4,14 @@ from cryptography.fernet import Fernet
+ 
+ import frappe
+ from frappe.tests import IntegrationTestCase
+-from frappe.utils.password import check_password, decrypt, encrypt, passlibctx, update_password
++from frappe.utils.password import (
++	check_password,
++	decrypt,
++	encrypt,
++	get_administrator_password_issues,
++	passlibctx,
++	update_password,
++)
+ 
+ 
+ class TestPassword(IntegrationTestCase):
+@@ -12,6 +19,19 @@ class TestPassword(IntegrationTestCase):
+ 		frappe.delete_doc("Email Account", "Test Email Account Password")
+ 		frappe.delete_doc("Email Account", "Test Email Account Password-new")
+ 
++	def test_administrator_password_policy(self):
++		for password in ("admin", "password", "test1", "administrator", "P@ssw0rd", "Admin@123"):
++			self.assertTrue(
++				get_administrator_password_issues(password),
++				f"{password!r} must be rejected for Administrator",
++			)
++
++		for password in ("Eastern_43A1W", "Admin-Test-9f3K!", "Frappe@2026!x"):
++			self.assertFalse(
++				get_administrator_password_issues(password),
++				f"{password!r} must be accepted for Administrator",
++			)
++
+ 	def test_encrypted_password(self):
+ 		doc = self.make_email_account()
+ 
+diff --git a/frappe/utils/install.py b/frappe/utils/install.py
+index 31c8a23192..ea92582f81 100644
+--- a/frappe/utils/install.py
++++ b/frappe/utils/install.py
+@@ -3,11 +3,12 @@
+ import getpass
+ 
+ import frappe
++from frappe import _
+ from frappe.desk.doctype.notification_type.notification_type import install_notification_types
+ from frappe.email.doctype.notification.notification import install_notification_templates
+ from frappe.geo.doctype.country.country import import_country_and_currency
+ from frappe.utils import cint
+-from frappe.utils.password import update_password
++from frappe.utils.password import get_administrator_password_issues, update_password
+ 
+ 
+ def before_install():
+@@ -41,7 +42,30 @@ def after_install():
+ 	frappe.get_doc("User", "Administrator").add_roles(*frappe.get_all("Role", pluck="name"))
+ 
+ 	# update admin password
+-	update_password("Administrator", get_admin_password())
++	admin_password = get_admin_password()
++	issues = get_administrator_password_issues(admin_password)
++	if issues:
++		if not cint(frappe.conf.get("developer_mode")):
++			frappe.throw(
++				msg=" ".join(issues)
++				+ " "
++				+ _(
++					"Hosted production sites must use a strong Administrator password. "
++					"Enable developer_mode only for local development."
++				),
++				title=_("Weak Administrator password"),
++			)
++
++		# Developer experience: allow a weak password locally, but make the risk visible.
++		message = " ".join(issues) + " " + _(
++			"Allowed because developer_mode is enabled. Do not use a weak Administrator "
++			"password on hosted production, especially when Server Script is enabled."
++		)
++		print(f"WARNING: {message}")
++		frappe.logger("frappe.install").warning(message)
++		update_password("Administrator", admin_password, validate=False)
++	else:
++		update_password("Administrator", admin_password)
+ 
+ 	if not frappe.conf.skip_setup_wizard:
+ 		# only set home_page if the value doesn't exist in the db
+diff --git a/frappe/utils/password.py b/frappe/utils/password.py
+index a1e7423732..ef3dc8a854 100644
+--- a/frappe/utils/password.py
++++ b/frappe/utils/password.py
+@@ -12,6 +12,8 @@ from frappe.utils import cstr, encode
+ 
+ Auth = Table("__Auth")
+ 
++MINIMUM_ADMINISTRATOR_PASSWORD_SCORE = 2
++
+ passlibctx = CryptContext(
+ 	schemes=[
+ 		"pbkdf2_sha256",
+@@ -20,6 +22,37 @@ passlibctx = CryptContext(
+ )
+ 
+ 
++def get_administrator_password_issues(password: str) -> list[str]:
++	"""Return reasons why `password` is not acceptable for the Administrator account."""
++	from frappe.utils.password_strength import test_password_strength
++
++	result = test_password_strength(password)
++	score = result.get("score", 0)
++	issues = []
++
++	if score < MINIMUM_ADMINISTRATOR_PASSWORD_SCORE:
++		issues.append(_("Password is too guessable. Use a longer, less common password."))
++
++	# Only apply the common-password rule while the password is still weak. A
++	# strong password may legitimately contain a common word (e.g. "admin") as
++	# one part of a longer passphrase.
++	is_common_password = score <= MINIMUM_ADMINISTRATOR_PASSWORD_SCORE and any(
++		match.get("dictionary_name") == "passwords" for match in result.get("sequence") or []
++	)
++	if is_common_password:
++		issues.append(_("Password is a commonly used password."))
++
++	return issues
++
++
++def validate_administrator_password(password: str) -> None:
++	if issues := get_administrator_password_issues(password):
++		frappe.throw(
++			msg="<br>".join(issues),
++			title=_("Weak Administrator password"),
++		)
++
++
+ def get_decrypted_password(doctype, name, fieldname="password", raise_exception=True):
+ 	result = (
+ 		frappe.qb.from_(Auth)
+@@ -108,7 +141,9 @@ def check_password(user, pwd, doctype="User", fieldname="password", delete_track
+ 		delete_login_failed_cache(user)
+ 
+ 	if passlibctx.needs_update(result[0].password):
+-		update_password(user, pwd, doctype, fieldname)
++		# Rehashing an existing password must not be blocked by the current policy,
++		# otherwise a legacy weak password can prevent login entirely.
++		update_password(user, pwd, doctype, fieldname, validate=False)
+ 
+ 	return user
+ 
+@@ -117,7 +152,9 @@ def delete_login_failed_cache(user):
+ 	frappe.cache.hdel("login_failed_count", user)
+ 
+ 
+-def update_password(user, pwd, doctype="User", fieldname="password", logout_all_sessions=False):
++def update_password(
++	user, pwd, doctype="User", fieldname="password", logout_all_sessions=False, validate=True
++):
+ 	"""
+ 	Update the password for the User
+ 
+@@ -126,7 +163,11 @@ def update_password(user, pwd, doctype="User", fieldname="password", logout_all_
+ 	:param doctype: doctype name (for encryption)
+ 	:param fieldname: fieldname (in given doctype) (for encryption)
+ 	:param logout_all_session: delete all other session
++	:param validate: enforce the Administrator password policy
+ 	"""
++	if validate and doctype == "User" and fieldname == "password" and user == "Administrator":
++		validate_administrator_password(pwd)
++
+ 	hashPwd = passlibctx.hash(pwd)
+ 
+ 	query = frappe.qb.into(Auth).columns(

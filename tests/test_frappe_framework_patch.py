@@ -44,6 +44,13 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build-images.yml"
 PATCHED_FILES = [
     "frappe/integrations/trace_context.py",
     "frappe/utils/background_jobs.py",
+    "frappe/utils/password.py",
+    "frappe/utils/install.py",
+    "frappe/commands/site.py",
+    "frappe/core/doctype/user/user.py",
+    "frappe/tests/test_password.py",
+    "frappe/commands/test_commands.py",
+    "frappe/auth.py",
 ]
 
 # The patch-delta contract. One marker per patch under patches/:
@@ -100,6 +107,12 @@ PATCH_MARKERS = [
         "0008-api-key-auth-caching-with-revocation.patch",
         "frappe/auth.py",
         "api_auth_cache:",
+        "added",
+    ),
+    (
+        "0009-administrator-account-hardening.patch",
+        "frappe/utils/password.py",
+        "validate_administrator_password",
         "added",
     ),
 ]
@@ -368,7 +381,7 @@ class WorkflowStructureTests(unittest.TestCase):
             f'{s.get("name","")} :: {s.get("uses","")} :: {s.get("run","")} :: {s.get("with",{})}'
             for s in job["steps"]
         )
-        self.assertIn("tested-vanilla-and-granian-images", steps, "matrix must download the tested-images archive")
+        self.assertIn("tested-images-${{ matrix.arch }}", steps, "matrix must download the tested-images archive")
         self.assertIn("gunzip", steps, "matrix must load the exported archive")
         self.assertIn("matrix-variant-test.sh", steps, "matrix must invoke the variant-aware test")
         # Matrix must never rebuild; it must consume the artifact.
@@ -386,8 +399,21 @@ class WorkflowStructureTests(unittest.TestCase):
 
     def test_publish_depends_on_matrix(self):
         self.assertIn(
-            "variant-matrix", self.workflow["jobs"]["publish"]["needs"],
-            "publish must be gated behind variant-matrix",
+            "variant-matrix", self.workflow["jobs"]["publish-arch"]["needs"],
+            "publish-arch must be gated behind variant-matrix",
+        )
+
+    def test_upstream_tests_run_and_gate_publish(self):
+        job = self.workflow["jobs"]["upstream-tests"]
+        steps = "\n".join(s.get("run", "") for s in job["steps"])
+        self.assertIn("bench --site crm.localhost run-tests --app frappe", steps)
+        self.assertIn(
+            "upstream-tests", self.workflow["jobs"]["publish-arch"]["needs"],
+            "publish must be gated behind the upstream Frappe test job",
+        )
+        self.assertIn(
+            "patch-tests", self.workflow["jobs"]["publish-arch"]["needs"],
+            "publish must be gated behind the patch-layer test job",
         )
 
     def test_images_job_builds_all_three_and_granian_from_latest(self):

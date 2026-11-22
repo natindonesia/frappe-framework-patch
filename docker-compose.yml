@@ -58,6 +58,9 @@ services:
       SITE_NAME: ${SITE_NAME:-crm.localhost}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      # Local compose is a developer bench. Production deployments must set
+      # DEVELOPER_MODE=0 and a strong ADMIN_PASSWORD.
+      DEVELOPER_MODE: ${DEVELOPER_MODE:-1}
     volumes:
     - sites-data:/home/frappe/frappe-bench/sites
     depends_on:
