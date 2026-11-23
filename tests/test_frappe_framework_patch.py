@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import re
 import unittest
 from pathlib import Path
 
@@ -447,6 +448,22 @@ class WorkflowStructureTests(unittest.TestCase):
             self.workflow["jobs"]["publish-arch"]["needs"],
             "advisory suite must not block publish",
         )
+
+    def test_container_script_blocks_hold_no_stray_quotes(self):
+        """A lone apostrophe inside a `bash -lc '...'` block silently ends the
+        quoted string, so the rest of the block runs on the host. Comments are
+        the usual offender ("account's"), and the failure only shows up as
+        `bench: command not found` mid-job."""
+        pattern = re.compile(r"bash -lc '\n(.*?)\n\s*'", re.DOTALL)
+        for job_id, job in self.workflow["jobs"].items():
+            for step in job.get("steps", []):
+                body = step.get("run", "")
+                for block in pattern.findall(body):
+                    self.assertNotIn(
+                        "'",
+                        block,
+                        f"{job_id} / {step.get('name')}: apostrophe inside a single-quoted bash -lc block",
+                    )
 
     def test_images_job_builds_all_three_and_granian_from_latest(self):
         job = self.workflow["jobs"]["images"]
