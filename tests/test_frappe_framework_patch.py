@@ -382,8 +382,13 @@ class WorkflowStructureTests(unittest.TestCase):
             for s in job["steps"]
         )
         self.assertIn("tested-images-${{ matrix.arch }}", steps, "matrix must download the tested-images archive")
-        self.assertIn("gunzip", steps, "matrix must load the exported archive")
+        # The archive is compressed once, with zstd, in the images job; the
+        # consumer must decompress that same format rather than re-guessing.
+        self.assertIn("tested-images.tar.zst", steps, "matrix must download the zstd archive")
+        self.assertIn("zstd -dc", steps, "matrix must load the exported archive")
         self.assertIn("matrix-variant-test.sh", steps, "matrix must invoke the variant-aware test")
+        # The vulnerability DB is ~250 MB and every scan job needs it.
+        self.assertIn("Cache Trivy database", steps, "scan jobs must restore the Trivy DB instead of re-downloading it")
         # Matrix must never rebuild; it must consume the artifact.
         for s in job["steps"]:
             run = s.get("run", "")
@@ -419,12 +424,17 @@ class WorkflowStructureTests(unittest.TestCase):
     def test_upstream_full_suite_is_sharded_and_advisory(self):
         job = self.workflow["jobs"]["upstream-full-suite"]
         matrix = job["strategy"]["matrix"]
-        self.assertEqual(matrix["shard"], [1, 2, 3, 4])
+        # Two shards: most of a shard's wall time is bring-up, so more shards
+        # buy test time at the price of another full copy of that overhead.
+        self.assertEqual(matrix["shard"], [1, 2])
         self.assertIn("latest-granian", matrix["variant"])
         self.assertIn("latest", matrix["variant"])
         steps = "\n".join(s.get("run", "") for s in job["steps"])
         self.assertIn("run-parallel-tests --app frappe", steps)
-        self.assertIn("--total-builds 4", steps)
+        self.assertIn(f"--total-builds {len(matrix['shard'])}", steps,
+                      "the shard count and --total-builds must agree")
+        self.assertNotIn("compose-teardown.sh", steps,
+                         "the runner is destroyed when the job ends; teardown buys nothing")
         self.assertTrue(
             job.get("continue-on-error"),
             "full suite stays advisory until dev-parity gaps are closed",
@@ -437,10 +447,20 @@ class WorkflowStructureTests(unittest.TestCase):
 
     def test_images_job_builds_all_three_and_granian_from_latest(self):
         job = self.workflow["jobs"]["images"]
-        steps = "\n".join(s.get("run", "") for s in job["steps"])
+        steps = "\n".join(
+            f'{s.get("name","")} :: {s.get("run","")} :: {s.get("with",{})}'
+            for s in job["steps"]
+        )
         for script in ("vanilla-build.sh", "base-build.sh", "granian-build.sh", "granian-verify.sh"):
             self.assertIn(script, steps, f"images job must run {script}")
-        self.assertIn("tested-images.tar.gz", steps, "images job must export exact tested images")
+        self.assertIn("tested-images.tar.zst", steps, "images job must export exact tested images")
+        # Exactly one compression pass: multi-threaded zstd here, and the
+        # upload stores the archive as-is instead of zlib'ing it again.
+        self.assertIn("zstd -T0", steps, "the archive must be compressed in parallel, once")
+        self.assertIn("'compression-level': 0", steps, "the upload must not re-compress the archive")
+        checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout"))
+        self.assertEqual(checkout["with"]["fetch-depth"], 1,
+                         "the build reads no history; a full frappe clone is dead weight")
         # granian-build.sh preserves the explicit FROM base=frappe:latest contract.
         gb = Path(REPO_ROOT) / "scripts" / "ci" / "granian-build.sh"
         self.assertIn("BASE_IMAGE=frappe:latest", gb.read_text())
