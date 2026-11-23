@@ -778,6 +778,13 @@ jobs:
               platforms="$(docker buildx imagetools inspect "$ref" \
                 --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}')"
               echo "${ref}: ${platforms}"
+              # An attestation manifest copied along with an arch image shows up
+              # as unknown/unknown and means that arch tag was published as an
+              # index, not a single manifest.
+              case " ${platforms} " in
+                *" unknown/unknown "*)
+                  echo "::error::${ref} carries an unknown/unknown child; build with --provenance=false --sbom=false"; exit 1 ;;
+              esac
               for want in linux/amd64 linux/arm64; do
                 case " ${platforms} " in
                   *" ${want} "*) ;;
