@@ -14,6 +14,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # needed. The cache lives only as long as the job, so each leg starts cold.
 set_image_metadata_args
 docker buildx build \
+  --provenance=false --sbom=false \
   --target frappe-base \
   "${IMAGE_METADATA_ARGS[@]}" \
   --load \

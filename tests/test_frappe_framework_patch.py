@@ -453,7 +453,15 @@ class WorkflowStructureTests(unittest.TestCase):
         self.assertIn("tested-images.tar.zst", steps, "images job must export exact tested images")
         # granian-build.sh preserves the explicit FROM base=frappe:latest contract.
         gb = Path(REPO_ROOT) / "scripts" / "ci" / "granian-build.sh"
-        self.assertIn("BASE_IMAGE=frappe:latest", gb.read_text())
+        granian = gb.read_text()
+        self.assertIn("BASE_IMAGE=frappe:latest", granian)
+        # granian is the only plain `docker build`; BuildKit's default
+        # provenance attestation would turn the pushed tag into an OCI index
+        # (image + "unknown/unknown" manifest) and fail the multi-arch merge's
+        # "child is the arch manifest" assertion.
+        self.assertIn("--provenance=false --sbom=false", granian)
+        self.assertIn("--provenance=false --sbom=false",
+                      (Path(REPO_ROOT) / "scripts" / "ci" / "base-build.sh").read_text())
 
 
 if __name__ == "__main__":

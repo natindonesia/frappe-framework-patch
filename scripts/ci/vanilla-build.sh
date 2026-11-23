@@ -13,6 +13,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # inside it, so patch edits still never re-run `bench init` within the job.
 set_image_metadata_args
 docker buildx build \
+  --provenance=false --sbom=false \
   --target frappe \
   "${IMAGE_METADATA_ARGS[@]}" \
   --load \
