@@ -416,11 +416,11 @@ jobs:
   upstream-full-suite:
     name: 'Upstream Frappe suite (${{ matrix.variant }}, shard ${{ matrix.shard }}/2)'
     needs: images
-    # ADVISORY: the production runtime image is not a dev-parity environment
-    # (no .git in apps/frappe, developer_mode=1, no writable source tree). The
-    # same failures reproduce on the UNPATCHED frappe:base image, so this job
-    # reports suite health without blocking publish. Flip to blocking once the
-    # environment parity gaps are closed.
+    # ADVISORY: the production runtime image is still not a dev-parity
+    # environment (no .git in apps/frappe, no writable source tree, PDF/attach
+    # tooling differences). The remaining failures reproduce on the UNPATCHED
+    # frappe:base image, so this job reports suite health without blocking
+    # publish. Flip to blocking once those gaps close.
     continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -437,9 +437,13 @@ jobs:
       EXTRA_FILES: ${{ matrix.variant == 'latest-granian' && 'resources/compose.variant-ci.yml resources/compose.upstream-ci.yml resources/compose.granian-ci.yml' || 'resources/compose.variant-ci.yml resources/compose.upstream-ci.yml' }}
       HTTP_PORT: 18089
       SITE_NAME: crm.localhost
-      ADMIN_PASSWORD: admin
+      # Dev parity, not a dev bench: developer_mode=1 would let the suite
+      # rewrite doctype/workspace files in the image and mask developer-only
+      # assertions. With it off the install gate also requires a real
+      # Administrator password, which is exactly what this job should prove.
+      ADMIN_PASSWORD: Admin-Test-9f3K!
       MYSQL_ROOT_PASSWORD: admin
-      DEVELOPER_MODE: "1"
+      DEVELOPER_MODE: "0"
       CI_WAIT_ROUNDS: ${{ matrix.variant == 'latest-granian' && 120 || 60 }}
     steps:
       - name: Checkout compose resources and CI helpers
@@ -490,10 +494,15 @@ jobs:
           source scripts/ci/common.sh
           # Same shape as Frappe's own CI: HTTP tests need a reachable
           # host_name, mail tests need the compose-network SMTP sink, and CLI
-          # tests need allow_tests/root_*.
+          # tests need allow_tests/root_*. `bench new-site` stamps
+          # developer_mode=1 into the site config, so it is turned off at both
+          # levels here: the suite must test the production shape, not a dev
+          # bench that rewrites doctype/workspace files on disk.
           compose exec -T web bash -lc '
             set -e
             cd /home/frappe/frappe-bench
+            bench set-config -g developer_mode 0
+            bench --site crm.localhost set-config developer_mode 0 --parse
             bench --site crm.localhost set-config allow_tests 1 --parse
             bench --site crm.localhost set-config server_script_enabled 1 --parse
             bench --site crm.localhost set-config host_name "http://crm.localhost:8000"
@@ -502,7 +511,6 @@ jobs:
             bench --site crm.localhost set-config mail_port 1025 --parse
             bench --site crm.localhost set-config mail_login "test@example.com"
             bench --site crm.localhost set-config mail_password admin
-            bench --site crm.localhost set-config admin_password admin
             bench --site crm.localhost set-config root_login root
             bench --site crm.localhost set-config root_password admin
           '
