@@ -382,7 +382,7 @@ class WorkflowStructureTests(unittest.TestCase):
             for s in job["steps"]
         )
         self.assertIn("tested-images-${{ matrix.arch }}", steps, "matrix must download the tested-images archive")
-        self.assertIn("gunzip", steps, "matrix must load the exported archive")
+        self.assertIn("zstd -dc", steps, "matrix must load the exported archive")
         self.assertIn("matrix-variant-test.sh", steps, "matrix must invoke the variant-aware test")
         # Matrix must never rebuild; it must consume the artifact.
         for s in job["steps"]:
@@ -419,16 +419,26 @@ class WorkflowStructureTests(unittest.TestCase):
     def test_upstream_full_suite_is_sharded_and_advisory(self):
         job = self.workflow["jobs"]["upstream-full-suite"]
         matrix = job["strategy"]["matrix"]
-        self.assertEqual(matrix["shard"], [1, 2, 3, 4])
+        self.assertEqual(matrix["shard"], [1, 2])
         self.assertIn("latest-granian", matrix["variant"])
         self.assertIn("latest", matrix["variant"])
         steps = "\n".join(s.get("run", "") for s in job["steps"])
         self.assertIn("run-parallel-tests --app frappe", steps)
-        self.assertIn("--total-builds 4", steps)
+        self.assertIn("--total-builds 2", steps)
         self.assertTrue(
             job.get("continue-on-error"),
             "full suite stays advisory until dev-parity gaps are closed",
         )
+        # The suite must run the production shape, not a dev bench: developer
+        # mode on would make the workspace/doctype modules test authoring paths.
+        self.assertEqual(job["env"]["DEVELOPER_MODE"], "0")
+        self.assertNotEqual(job["env"]["ADMIN_PASSWORD"], "admin")
+        self.assertIn("set-config -g developer_mode 0", steps)
+        self.assertIn("set-config developer_mode 0", steps)
+        # Translate/workspace tooling shells out to git over apps/frappe.
+        self.assertIn("git init", steps)
+        # A failing shard must annotate, never abort the advisory job.
+        self.assertIn("if ! compose exec", steps)
         self.assertNotIn(
             "upstream-full-suite",
             self.workflow["jobs"]["publish-arch"]["needs"],
@@ -440,7 +450,7 @@ class WorkflowStructureTests(unittest.TestCase):
         steps = "\n".join(s.get("run", "") for s in job["steps"])
         for script in ("vanilla-build.sh", "base-build.sh", "granian-build.sh", "granian-verify.sh"):
             self.assertIn(script, steps, f"images job must run {script}")
-        self.assertIn("tested-images.tar.gz", steps, "images job must export exact tested images")
+        self.assertIn("tested-images.tar.zst", steps, "images job must export exact tested images")
         # granian-build.sh preserves the explicit FROM base=frappe:latest contract.
         gb = Path(REPO_ROOT) / "scripts" / "ci" / "granian-build.sh"
         self.assertIn("BASE_IMAGE=frappe:latest", gb.read_text())
