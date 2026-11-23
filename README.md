@@ -328,7 +328,11 @@ overlays).
   mid-run) and a real `Admin-Test-9f3K!` Administrator password, so the
   command tests still see a production-shaped password; it gives the suite a
   throwaway git repo in `apps/frappe` (the translate and workspace tooling call
-  `git.Repo(...)`); and a failing shard surfaces as a `::warning::` annotation
+  `git.Repo(...)`); it restores the `frappe.local.site` binding that upstream
+  `test_otel.py` deletes in `tearDown` (`scripts/ci/fix-otel-test-isolation.py`,
+  a no-op once upstream is fixed) so a shard reaches its execution summary
+  instead of dying with `RuntimeError: object is not bound`; and a failing
+  shard surfaces as a `::warning::` annotation
   with the full log instead of a red job. The install-time password gate is
   proven by the targeted `upstream-tests` job and the patch tests instead. It
   stays **advisory**: the production

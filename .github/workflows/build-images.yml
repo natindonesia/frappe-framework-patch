@@ -530,6 +530,16 @@ jobs:
             git -c user.email=ci@example.com -c user.name=ci add -A
             git -c user.email=ci@example.com -c user.name=ci commit -qm ci-baseline
           '
+      - name: Neutralise upstream site-binding leak
+        # frappe/tests/test_otel.py::TestJobSpans.tearDown deletes
+        # frappe.local.site instead of restoring it, which breaks every later
+        # module in the shard and finally kills the runner before its summary.
+        # The script is a no-op once upstream fixes it.
+        run: |
+          set -uo pipefail
+          source scripts/ci/common.sh
+          compose cp scripts/ci/fix-otel-test-isolation.py web:/tmp/fix-otel-test-isolation.py
+          compose exec -T web python3 /tmp/fix-otel-test-isolation.py
       - name: Run upstream Frappe suite shard ${{ matrix.shard }}/2
         # Advisory: report failures as warnings instead of failing the job, so
         # known environment-parity failures do not paint the workflow red.

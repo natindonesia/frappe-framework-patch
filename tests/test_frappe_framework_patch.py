@@ -442,6 +442,12 @@ class WorkflowStructureTests(unittest.TestCase):
         self.assertIn("git init", steps)
         # A failing shard must annotate, never abort the advisory job.
         self.assertIn("if ! compose exec", steps)
+        # test_otel leaves frappe.local.site deleted, which poisons every later
+        # module and kills the runner before its summary.
+        self.assertIn("fix-otel-test-isolation.py", steps)
+        fixer = Path(REPO_ROOT) / "scripts" / "ci" / "fix-otel-test-isolation.py"
+        self.assertTrue(fixer.is_file())
+        self.assertIn("delattr(frappe.local, \"site\")", fixer.read_text())
         self.assertNotIn(
             "upstream-full-suite",
             self.workflow["jobs"]["publish-arch"]["needs"],
