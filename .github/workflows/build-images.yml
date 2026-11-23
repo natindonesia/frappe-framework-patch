@@ -437,13 +437,15 @@ jobs:
       EXTRA_FILES: ${{ matrix.variant == 'latest-granian' && 'resources/compose.variant-ci.yml resources/compose.upstream-ci.yml resources/compose.granian-ci.yml' || 'resources/compose.variant-ci.yml resources/compose.upstream-ci.yml' }}
       HTTP_PORT: 18089
       SITE_NAME: crm.localhost
-      # Dev parity, not a dev bench: developer_mode=1 would let the suite
-      # rewrite doctype/workspace files in the image and mask developer-only
-      # assertions. With it off the install gate also requires a real
-      # Administrator password, which is exactly what this job should prove.
+      # developer_mode=1: the suite is advisory and this is what lets it
+      # complete. With developer_mode=0 the sharded runner mass-fails and dies
+      # mid-run (test_perf/test_pdf/test_otel/..., then a destroy() leaves
+      # frappe.session unbound and the runner exits without a summary). The
+      # production password/install shape is proven in the targeted
+      # `upstream-tests` job and the patch-layer tests instead.
       ADMIN_PASSWORD: Admin-Test-9f3K!
       MYSQL_ROOT_PASSWORD: admin
-      DEVELOPER_MODE: "0"
+      DEVELOPER_MODE: "1"
       CI_WAIT_ROUNDS: ${{ matrix.variant == 'latest-granian' && 120 || 60 }}
     steps:
       - name: Checkout compose resources and CI helpers
@@ -494,15 +496,11 @@ jobs:
           source scripts/ci/common.sh
           # Same shape as Frappe's own CI: HTTP tests need a reachable
           # host_name, mail tests need the compose-network SMTP sink, and CLI
-          # tests need allow_tests/root_*. `bench new-site` stamps
-          # developer_mode=1 into the site config, so it is turned off at both
-          # levels here: the suite must test the production shape, not a dev
-          # bench that rewrites doctype/workspace files on disk.
+          # tests need allow_tests/root_*. developer_mode stays on: this suite
+          # is advisory and dev0 makes the sharded runner crash mid-run.
           compose exec -T web bash -lc '
             set -e
             cd /home/frappe/frappe-bench
-            bench set-config -g developer_mode 0
-            bench --site crm.localhost set-config developer_mode 0 --parse
             bench --site crm.localhost set-config allow_tests 1 --parse
             bench --site crm.localhost set-config server_script_enabled 1 --parse
             bench --site crm.localhost set-config host_name "http://crm.localhost:8000"

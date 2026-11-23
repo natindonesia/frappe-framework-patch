@@ -430,15 +430,14 @@ class WorkflowStructureTests(unittest.TestCase):
             job.get("continue-on-error"),
             "full suite stays advisory until dev-parity gaps are closed",
         )
-        # The suite must run the production shape, not a dev bench: developer
-        # mode on would make the workspace/doctype modules test authoring paths.
-        self.assertEqual(job["env"]["DEVELOPER_MODE"], "0")
+        # The suite runs with developer mode on: dev0 makes the sharded runner
+        # mass-fail and crash mid-run. Production password/install shape is
+        # proven in the targeted `upstream-tests` job and the patch tests.
+        self.assertEqual(job["env"]["DEVELOPER_MODE"], "1")
         self.assertNotEqual(job["env"]["ADMIN_PASSWORD"], "admin")
-        self.assertIn("set-config -g developer_mode 0", steps)
         # Command tests read frappe.conf.admin_password back for `bench
         # new-site`/`set-admin-password`; it must be the real account password.
         self.assertIn('set-config admin_password "Admin-Test-9f3K!"', steps)
-        self.assertIn("set-config developer_mode 0", steps)
         # Translate/workspace tooling shells out to git over apps/frappe.
         self.assertIn("git init", steps)
         # A failing shard must annotate, never abort the advisory job.

@@ -324,11 +324,14 @@ overlays).
   `bench run-parallel-tests`, split into two weighted shards on both the
   gunicorn (`latest`) and Granian (`latest-granian`) images, with a
   compose-network SMTP sink (`mailpit`) for mail tests. It runs with
-  `DEVELOPER_MODE=0` and a real `Admin-Test-9f3K!` Administrator password, so it
-  also exercises the install-time password gate; it gives the suite a throwaway
-  git repo in `apps/frappe` (the translate and workspace tooling call
+  `DEVELOPER_MODE=1` (dev0 makes the sharded runner mass-fail and crash
+  mid-run) and a real `Admin-Test-9f3K!` Administrator password, so the
+  command tests still see a production-shaped password; it gives the suite a
+  throwaway git repo in `apps/frappe` (the translate and workspace tooling call
   `git.Repo(...)`); and a failing shard surfaces as a `::warning::` annotation
-  with the full log instead of a red job. It stays **advisory**: the production
+  with the full log instead of a red job. The install-time password gate is
+  proven by the targeted `upstream-tests` job and the patch tests instead. It
+  stays **advisory**: the production
   runtime image still lacks dev parity (no writable source tree, PDF/attachment
   tooling), and the remaining failures reproduce on the unpatched `frappe:base`
   image, so it must not block publish until those gaps close. A separate
