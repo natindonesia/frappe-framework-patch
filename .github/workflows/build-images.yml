@@ -511,6 +511,10 @@ jobs:
             bench --site crm.localhost set-config mail_port 1025 --parse
             bench --site crm.localhost set-config mail_login "test@example.com"
             bench --site crm.localhost set-config mail_password admin
+            # The command tests read this back for `bench new-site` and
+            # `set-admin-password`, so it must be the account's real password
+            # (production shape: not "admin").
+            bench --site crm.localhost set-config admin_password "Admin-Test-9f3K!"
             bench --site crm.localhost set-config root_login root
             bench --site crm.localhost set-config root_password admin
           '

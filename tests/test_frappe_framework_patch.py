@@ -434,6 +434,9 @@ class WorkflowStructureTests(unittest.TestCase):
         self.assertEqual(job["env"]["DEVELOPER_MODE"], "0")
         self.assertNotEqual(job["env"]["ADMIN_PASSWORD"], "admin")
         self.assertIn("set-config -g developer_mode 0", steps)
+        # Command tests read frappe.conf.admin_password back for `bench
+        # new-site`/`set-admin-password`; it must be the real account password.
+        self.assertIn('set-config admin_password "Admin-Test-9f3K!"', steps)
         self.assertIn("set-config developer_mode 0", steps)
         # Translate/workspace tooling shells out to git over apps/frappe.
         self.assertIn("git init", steps)
