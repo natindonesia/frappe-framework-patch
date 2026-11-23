@@ -302,8 +302,8 @@ model (patches applied after `bench init`; the build context vendors
 overlays).
 
 - `build-images.yml` — on push / pull_request. Runs once per architecture
-  (`linux/amd64` on `blacksmith-4vcpu-ubuntu-2404`, `linux/arm64` on
-  `blacksmith-4vcpu-ubuntu-2404-arm` — native, never QEMU). Each leg builds the
+  (`linux/amd64` on `ubuntu-latest`, `linux/arm64` on `ubuntu-24.04-arm` —
+  native, never QEMU). Each leg builds the
   unpatched `base` first, then the patched `latest` on top of it, then
   `latest-granian` from the tested local `frappe:latest`; validates all three
   and exports them as one archive. One job per variant **per architecture** then
@@ -340,21 +340,30 @@ overlays).
   the latest `origin/version-16`, validates the patch set, and pushes only the
   parent repository's gitlink commit when validation succeeds.
 
-Every workflow in this repository runs on Blacksmith managed runners
-(`blacksmith-{2,4}vcpu-ubuntu-2404`, `-arm` only for the native arm64 build
-leg), per infrastructure-playbook#53 — there is no `ubuntu-latest` left, and the
-arm64 leg is the one documented exception to that ADR's "no ARM container
-builds" rule: the payload is arm64, so the runner is arm64 and no emulation is
-involved.
+Every workflow in this repository runs on **GitHub-hosted** standard runners
+(`ubuntu-latest`, and `ubuntu-24.04-arm` for the native arm64 build leg). This
+repository is public, so those minutes are free; infrastructure-playbook#53
+sends *private* repositories to Blacksmith, and running this one there cost
+Blacksmith ~$26/month — about half the organization's entire Blacksmith bill —
+for CI GitHub gives away. The arm64 leg is still the documented exception to
+that ADR's "no ARM container builds" rule: the payload is arm64, so the runner
+is arm64 and no emulation is involved.
 
-The **only** layer cache is Blacksmith's sticky disk
-(`useblacksmith/setup-docker-builder`, `cache-key: Dockerfile-<arch>`). There is
-no registry cache and no `gha` cache: nothing is written to a registry for
-caching, so there is no `frappe-buildcache` package to store, prune or
-authenticate, and the build job needs no registry credentials at all. The
-trade-off is explicit — a cold sticky disk means a cold `bench init`. The
-Granian build uses no cache flags either (thin layer on top of the tested local
-image).
+The **only** layer cache is the job's own buildx builder
+(`docker/setup-buildx-action`, no `cache-key`). There is no registry cache and
+no `gha` cache: nothing is written to a registry for caching, so there is no
+`frappe-buildcache` package to store, prune or authenticate, and the build job
+needs no registry credentials at all. The trade-off is explicit — a fresh
+runner per job means the first build in a job is always a cold `bench init`;
+`base` and `latest` still share the pristine builder-base stages inside that
+job. The Granian build uses no cache flags either (thin layer on top of the
+tested local image).
+
+A hosted runner has ~14 GB of free workspace disk against the 80 GB a Blacksmith
+runner carries, so the two jobs that build or load the image archives run
+`Reclaim runner disk` first (drops the unused Android/.NET/GHC toolchains) and
+print free space on both sides of it. A future `ENOSPC` is then a line in the
+log, not a mystery.
 
 ## Security scanning
 

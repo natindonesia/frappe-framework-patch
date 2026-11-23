@@ -60,7 +60,7 @@ jobs:
   py315:
     name: 'Layer, test and publish py315 + JIT (${{ inputs.pbs_variant }})'
     # x86_64 python-build-standalone payload, Docker build + compose contract.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read

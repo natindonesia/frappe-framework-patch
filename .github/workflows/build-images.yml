@@ -8,17 +8,29 @@
 #
 # MULTI-ARCH (linux/amd64 + linux/arm64):
 #   * Each architecture is built NATIVELY on a runner of its own architecture —
-#     x64 on `blacksmith-4vcpu-ubuntu-2404`, arm64 on
-#     `blacksmith-4vcpu-ubuntu-2404-arm`. No QEMU: emulating this `bench init`
-#     (pip + yarn over the whole app tree) costs 2-10x wall clock and would not
-#     fit the timeout. This is the one intentional exception to the
-#     "never ARM: container build" rule in infrastructure-playbook#53 §4: that
-#     rule assumes an amd64 payload on an ARM runner (i.e. emulation), whereas
-#     here the ARM runner produces an arm64 payload with its own toolchain.
-#   * The only layer cache is the runner's buildx builder backed by Blacksmith's
-#     sticky disk (`cache-key: Dockerfile-<arch>`). No registry cache and no gha
-#     cache: nothing is written to a registry for caching, so there is no
-#     frappe-buildcache package to store, prune or authenticate.
+#     x64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`. No QEMU: emulating
+#     this `bench init` (pip + yarn over the whole app tree) costs 2-10x wall
+#     clock and would not fit the timeout. This is the one intentional exception
+#     to the "never ARM: container build" rule in infrastructure-playbook#53 §4:
+#     that rule assumes an amd64 payload on an ARM runner (i.e. emulation),
+#     whereas here the ARM runner produces an arm64 payload with its own
+#     toolchain.
+#   * GitHub-hosted, not Blacksmith: this repository is PUBLIC, so standard
+#     GitHub-hosted minutes (amd64 and arm64 alike) cost nothing, while the same
+#     jobs were ~$26/month of Blacksmith list price — half the org's entire
+#     Blacksmith bill, for CI that GitHub gives away. That is why the fleet rule
+#     in #53 is "private repos go to Blacksmith", not "everything does".
+#   * The layer cache is the buildx builder's own state for the duration of the
+#     job: base and latest share the pristine builder-base stages inside one
+#     runner, so a patch edit never re-runs `bench init`. Nothing is written to
+#     a registry and no gha cache is used, so there is no frappe-buildcache
+#     package to store, prune or authenticate. A fresh runner per job means the
+#     FIRST build on that runner is always cold; that is the price of not paying
+#     for a sticky disk.
+#   * GitHub's standard runner has ~14 GB of free workspace disk, not the 80 GB
+#     a Blacksmith runner carries, while these legs build two multi-GB images
+#     and a 1.3 GB archive. `Reclaim runner disk` therefore deletes the
+#     preinstalled toolchains this pipeline never uses before anything is built.
 #   * Each leg pushes single-arch manifests (`<tag>-amd64` / `<tag>-arm64`); the
 #     merge job folds them into the multi-arch index under the published tag, so
 #     `docker pull` selects the right platform automatically. The arch tags are
@@ -111,9 +123,9 @@ jobs:
         arch: [amd64, arm64]
         include:
           - arch: amd64
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: ubuntu-latest
           - arch: arm64
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
     steps:
       # Fail fast (and loudly) when the leg landed on the wrong runner: an
       # arm64 leg on an x64 runner would silently emulate the whole bench build.
@@ -127,10 +139,24 @@ jobs:
           esac
           if [ "$have" != "${{ matrix.arch }}" ]; then
             echo "::error::runner architecture is ${have}, this leg builds ${{ matrix.arch }} — refusing to build under emulation"
-            echo "  amd64 leg -> blacksmith-4vcpu-ubuntu-2404; arm64 leg -> blacksmith-4vcpu-ubuntu-2404-arm"
+            echo "  amd64 leg -> ubuntu-latest; arm64 leg -> ubuntu-24.04-arm"
             exit 1
           fi
           echo "native ${{ matrix.arch }} runner confirmed"
+      # A GitHub-hosted runner carries ~14 GB of free workspace disk, not the
+      # 80 GB a Blacksmith runner has, and this job builds three multi-GB images
+      # plus a 1.3 GB archive. Drop the preinstalled toolchains nothing here
+      # uses; print free space on both sides so a future shortage is visible in
+      # the log rather than appearing as a build-time ENOSPC.
+      - name: Reclaim runner disk
+        run: |
+          set -euo pipefail
+          df -h / | sed -n '1,2p'
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
+                      /usr/local/lib/node_modules
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          df -h / | sed -n '1,2p'
       - name: Checkout patch repository with Frappe submodule
         uses: actions/checkout@v7
         with:
@@ -145,13 +171,11 @@ jobs:
             echo "IMAGE_CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "FRAPPE_SHA=$(git -C frappe rev-parse HEAD)"
           } >> "$GITHUB_ENV"
-      # The ONLY layer cache: Blacksmith's sticky disk, keyed per architecture.
-      # No registry cache, no gha cache — nothing is written to a registry, so
-      # there is no frappe-buildcache package to store, prune or authenticate.
-      - name: Set up Docker Buildx (Blacksmith sticky-disk cache)
-        uses: useblacksmith/setup-docker-builder@v2
-        with:
-          cache-key: Dockerfile-${{ matrix.arch }}
+      # The ONLY layer cache: this job's own buildx builder. No registry cache,
+      # no gha cache — nothing is written to a registry, so there is no
+      # frappe-buildcache package to store, prune or authenticate.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
       # Build base FIRST so the shared pristine builder-base layers land in the
       # builder cache before the patched build consumes them.
       - name: Build unpatched base Docker image (frappe:base)
@@ -202,13 +226,22 @@ jobs:
         arch: [amd64, arm64]
         include:
           - arch: amd64
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: ubuntu-latest
           - arch: arm64
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
     env:
       # Report-only: scan and upload results, but do not fail the job/publish.
       SECURITY_FAIL_ON_FINDINGS: false
     steps:
+      # Same 14 GB workspace as the build legs, and this job loads a 1.3 GB
+      # archive back into images before starting a compose stack.
+      - name: Reclaim runner disk
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
+                      /usr/local/lib/node_modules
+          df -h / | sed -n '1,2p'
       - name: Checkout scripts and compose resources
         uses: actions/checkout@v7
         with:
@@ -251,7 +284,7 @@ jobs:
   upstream-tests:
     name: 'Upstream Frappe tests (latest, amd64)'
     needs: images
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
@@ -368,7 +401,7 @@ jobs:
     # reports suite health without blocking publish. Flip to blocking once the
     # environment parity gaps are closed.
     continue-on-error: true
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: read
@@ -490,7 +523,7 @@ jobs:
   # checks (patch applicability, markers, workflow structure), not bench tests.
   patch-tests:
     name: 'Patch-layer tests'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
@@ -514,7 +547,7 @@ jobs:
   # when Semgrep fails, so neither result hides the other.
   static-analysis:
     name: 'Static analysis - Semgrep SAST + Trivy source'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
@@ -576,9 +609,9 @@ jobs:
         arch: [amd64, arm64]
         include:
           - arch: amd64
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: ubuntu-latest
           - arch: arm64
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout patch repository
         uses: actions/checkout@v7
@@ -649,7 +682,7 @@ jobs:
     if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.push_to_registry == true)
     outputs:
       digests_json: ${{ steps.digests.outputs.digests_json }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
@@ -745,7 +778,7 @@ jobs:
   attest:
     name: 'Attest + sign ${{ matrix.variant }}'
     needs: publish
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
@@ -826,7 +859,7 @@ jobs:
   verify:
     name: 'Verify signatures and attestations'
     needs: [publish, attest]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read

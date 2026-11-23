@@ -8,8 +8,8 @@
 # retired signature/attestation manifests (the visible package-page noise).
 # The per-arch tags are permanent by design: every multi-arch index references
 # its child manifests by digest, so pruning them would break the index.
-# There is no build-cache package to prune: the layer cache lives on the
-# runner's Blacksmith sticky disk, not in a registry.
+# There is no build-cache package to prune: the layer cache lives in the job's
+# own buildx builder, not in a registry.
 name: Cleanup GHCR package versions
 
 on:
@@ -35,7 +35,7 @@ concurrency:
 jobs:
   cleanup:
     name: 'Prune stale package versions (frappe)'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout cleanup scripts

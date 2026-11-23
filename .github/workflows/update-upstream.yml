@@ -18,7 +18,7 @@ env:
 jobs:
   update:
     name: Update and validate Frappe submodule
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout patch repository with submodule
         uses: actions/checkout@v7
