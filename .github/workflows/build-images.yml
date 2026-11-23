@@ -472,14 +472,13 @@ jobs:
         run: |
           set -uo pipefail
           source scripts/ci/common.sh
+          # common.sh turns on `set -e`, so the runner has to sit in an `if`
+          # condition: a failing shard must annotate a warning, not abort.
           # CI=1 makes the parallel runner exit non-zero on failures.
-          compose exec -T web bash -lc \
-            "cd /home/frappe/frappe-bench && CI=1 bench --site crm.localhost run-parallel-tests --app frappe --build-number ${{ matrix.shard }} --total-builds 4"
-          rc=$?
-          if [ "$rc" -ne 0 ]; then
+          if ! compose exec -T web bash -lc \
+            "cd /home/frappe/frappe-bench && CI=1 bench --site crm.localhost run-parallel-tests --app frappe --build-number ${{ matrix.shard }} --total-builds 4"; then
             echo "::warning title=Upstream suite ${{ matrix.variant }} shard ${{ matrix.shard }}::suite reported failures (advisory, see log)"
           fi
-          exit 0
       - name: Tear down test stack
         if: always()
         run: |
