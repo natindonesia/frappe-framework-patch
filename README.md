@@ -338,7 +338,13 @@ overlays).
   stays **advisory**: the production
   runtime image still lacks dev parity (no writable source tree, PDF/attachment
   tooling), and the remaining failures reproduce on the unpatched `frappe:base`
-  image, so it must not block publish until those gaps close. A separate
+  image, so it must not block publish until those gaps close. Current residuals
+  (a measured run, two shards per variant): shard 1 - 1746 tests, 5 failing and
+  5 errors (`test_email_notification`, `test_no_delete_doc`, five
+  workspace-restore cases, three MCP/REST parity cases); shard 2 - 2264 tests,
+  4 failing and 16 errors (Chromium PDF/preview rendering, email and attachment
+  delivery, OTel stack-truncation cases, two hook cases). None of them touch the
+  code this patch set changes. A separate
   `patch-tests` job runs this repository's Python unittest suite
   (patch applicability, markers, workflow structure). Publish is gated on the
   targeted suite, patch tests, static analysis, and the per-variant matrix.
