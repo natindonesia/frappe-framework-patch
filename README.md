@@ -321,7 +321,7 @@ overlays).
   `TestCommands.test_set_password`) against the patched `latest` image — the
   fast signal for the auth/password/CLI surface this repository patches.
   `upstream-full-suite` then runs the complete upstream suite (~4k tests) with
-  `bench run-parallel-tests`, split into four weighted shards on both the
+  `bench run-parallel-tests`, split into two weighted shards on both the
   gunicorn (`latest`) and Granian (`latest-granian`) images, with a
   compose-network SMTP sink (`mailpit`) for mail tests. It is **advisory**:
   the production runtime image lacks dev-parity bits (`.git` in `apps/frappe`,
