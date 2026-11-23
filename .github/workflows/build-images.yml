@@ -540,10 +540,18 @@ jobs:
           source scripts/ci/common.sh
           # common.sh turns on `set -e`, so the runner has to sit in an `if`
           # condition: a failing shard must annotate a warning, not abort.
-          # CI=1 makes the parallel runner exit non-zero on failures.
+          # CI=1 makes the parallel runner exit non-zero on failures. The log is
+          # teed so a crashed shard (no execution summary) still shows its tail.
           if ! compose exec -T web bash -lc \
-            "cd /home/frappe/frappe-bench && CI=1 bench --site crm.localhost run-parallel-tests --app frappe --build-number ${{ matrix.shard }} --total-builds 2"; then
+            "cd /home/frappe/frappe-bench && CI=1 bench --site crm.localhost run-parallel-tests --app frappe --build-number ${{ matrix.shard }} --total-builds 2" \
+            2>&1 | tee /tmp/upstream-suite-${{ matrix.shard }}.log; then
             echo "::warning title=Upstream suite ${{ matrix.variant }} shard ${{ matrix.shard }}::suite reported failures (advisory, see log)"
+            if ! grep -q 'Tests: [0-9]*, Failing' /tmp/upstream-suite-${{ matrix.shard }}.log; then
+              echo "::warning title=Upstream suite ${{ matrix.variant }} shard ${{ matrix.shard }}::runner produced no summary (crashed mid-run)"
+            fi
+            echo "::group::tail of shard ${{ matrix.shard }} log"
+            tail -n 150 /tmp/upstream-suite-${{ matrix.shard }}.log
+            echo "::endgroup::"
           fi
 
   # STAGE 2d: the patch repository's own tests. These are Python unittest
