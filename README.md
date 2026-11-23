@@ -326,7 +326,10 @@ overlays).
   compose-network SMTP sink (`mailpit`) for mail tests. It is **advisory**:
   the production runtime image lacks dev-parity bits (`.git` in `apps/frappe`,
   `developer_mode=0`), and the same failures reproduce on the unpatched
-  `frappe:base` image, so it must not block publish until those gaps close. A
+  `frappe:base` image, so it must not block publish until those gaps close. It
+  does give the suite a throwaway git repo in `apps/frappe` (the translate and
+  workspace tooling call `git.Repo(...)`), and a failing shard surfaces as a
+  `::warning::` annotation with the full log instead of a red job.
   separate `patch-tests` job runs this repository's Python unittest suite
   (patch applicability, markers, workflow structure). Publish is gated on the
   targeted suite, patch tests, static analysis, and the per-variant matrix.
