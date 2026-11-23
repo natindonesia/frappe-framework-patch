@@ -55,7 +55,7 @@ jobs:
   k8s:
     name: Kind deploy, init & smoke test
     # kind + the full stack in one VM: 4 vCPU / 8 GB.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     if: >-
       github.event_name != 'registry_package' ||
       github.event.package.name == 'frappe'

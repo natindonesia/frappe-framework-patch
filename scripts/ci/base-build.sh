@@ -9,9 +9,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # patched frappe:latest then layers on top of. NOT the patched production image.
 #
 # NO registry/gha cache flags: the layer cache is the runner's own buildx
-# builder, i.e. Blacksmith's sticky disk (useblacksmith/setup-docker-builder,
-# keyed per architecture in the workflow). Nothing is written to a registry, so
-# there is no frappe-buildcache package and no cache credentials needed.
+# builder (docker/setup-buildx-action in the workflow). Nothing is written to a
+# registry, so there is no frappe-buildcache package and no cache credentials
+# needed. The cache lives only as long as the job, so each leg starts cold.
 set_image_metadata_args
 docker buildx build \
   --target frappe-base \
