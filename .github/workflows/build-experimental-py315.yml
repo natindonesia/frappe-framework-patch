@@ -32,6 +32,7 @@ on:
     # lands on main without rebuilding 3.15.
     paths:
       - 'experiments/py315-jit/**'
+      - '!experiments/py315-jit/**/*.md'
       - '.github/workflows/build-experimental-py315.yml'
       - 'scripts/ci/matrix-variant-test.sh'
       - 'scripts/ci/common.sh'
