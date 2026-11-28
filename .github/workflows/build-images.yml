@@ -57,6 +57,7 @@ on:
       - 'docs/**'
       - '**/*.md'
       - '.github/workflows/frappe-bench-chart.yml'
+      - '.github/workflows/build-experimental-py315.yml'
   pull_request:
     paths-ignore:
       - 'experiments/**'
@@ -64,6 +65,7 @@ on:
       - 'docs/**'
       - '**/*.md'
       - '.github/workflows/frappe-bench-chart.yml'
+      - '.github/workflows/build-experimental-py315.yml'
   workflow_dispatch:
     inputs:
       push_to_registry:

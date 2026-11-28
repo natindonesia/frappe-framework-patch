@@ -57,10 +57,18 @@ fails instead of silently installing something else.
 
 ## Running it
 
-Inputs: `base_image`, `pbs_variant` (`x86_64` baseline, or `x86_64_v3` which
-needs AVX2) and `push_to_registry`.
+Automatic: a push to `main` that changes `experiments/py315-jit/**`, this
+workflow, or the contract scripts it is gated by (`scripts/ci/matrix-variant-test.sh`,
+`scripts/ci/common.sh`, `scripts/ci/granian-verify.sh`, the compose overlays)
+builds and gates the image with the defaults below. **A push run never
+publishes** — it cannot move a tag someone is deployed from.
 
-Published tags (only when `push_to_registry` is set):
+Manual (`workflow_dispatch`) inputs: `base_image`, `pbs_variant` (`x86_64`
+baseline, or `x86_64_v3` which needs AVX2) and `push_to_registry`. On a push the
+defaults are `base_image=ghcr.io/natindonesia/frappe:latest-granian` and
+`pbs_variant=x86_64`.
+
+Published tags (only on a manual run with `push_to_registry` set):
 
 - `ghcr.io/<owner>/frappe:<frappe-version>-py315-granian`
 - `ghcr.io/<owner>/frappe:<frappe-version>-py315-v3-granian`

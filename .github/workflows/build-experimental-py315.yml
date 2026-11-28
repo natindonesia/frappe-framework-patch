@@ -1,11 +1,17 @@
 # EXPERIMENTAL: Frappe on CPython 3.15 built with the experimental JIT.
 #
-# Manual only (workflow_dispatch). Fully separate from build-images.yml: it
-# never runs on push/PR, never touches the floating tags (latest / base /
-# latest-granian), and publishes only under an explicit experimental tag:
+# Runs automatically on pushes to main that touch this experiment (its Dockerfile,
+# this workflow, or the contract scripts it is gated by) and can also be started
+# manually with a different base image / CPU variant. Fully separate from
+# build-images.yml: it never touches the floating tags (latest / base /
+# latest-granian), and it publishes only under an explicit experimental tag, and
+# only when started manually with push_to_registry:
 #
 #   <frappe-version>-py315-granian       (PBS baseline x86_64)
 #   <frappe-version>-py315-v3-granian    (PBS x86_64_v3, needs AVX2)
+#
+# A push run builds and gates the image but never publishes, so an ordinary
+# commit cannot move a tag someone is deployed from.
 #
 # It does NOT rebuild Frappe. It layers on top of an already published granian
 # image (input `base_image`): the interpreter is swapped for python-build-
@@ -20,6 +26,20 @@
 name: Experimental - Python 3.15 + JIT image
 
 on:
+  push:
+    branches: [main]
+    # Only what can change this image or the gate it must pass. Everything else
+    # lands on main without rebuilding 3.15.
+    paths:
+      - 'experiments/py315-jit/**'
+      - '.github/workflows/build-experimental-py315.yml'
+      - 'scripts/ci/matrix-variant-test.sh'
+      - 'scripts/ci/common.sh'
+      - 'scripts/ci/granian-verify.sh'
+      - 'resources/compose.ci.yml'
+      - 'resources/compose.granian-ci.yml'
+      - 'resources/compose.variant-ci.yml'
+      - 'docker-compose.yml'
   workflow_dispatch:
     inputs:
       base_image:
@@ -43,6 +63,10 @@ on:
 
 env:
   DOCKER_BUILDKIT: 1
+  # Inputs are empty on a push trigger, so every run reads these instead. Manual
+  # dispatch overrides them.
+  BASE_IMAGE: ${{ inputs.base_image || 'ghcr.io/natindonesia/frappe:latest-granian' }}
+  PBS_VARIANT: ${{ inputs.pbs_variant || 'x86_64' }}
   # python-build-standalone release and CPython version. Hashes are the
   # install_only_stripped tarballs, matching the release's SHA256SUMS.
   PBS_RELEASE: '20261110'
@@ -58,7 +82,7 @@ concurrency:
 
 jobs:
   py315:
-    name: 'Layer, test and publish py315 + JIT (${{ inputs.pbs_variant }})'
+    name: "Build and gate py315 + JIT (${{ inputs.pbs_variant || 'x86_64' }})"
     # x86_64 python-build-standalone payload, Docker build + compose contract.
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -73,7 +97,7 @@ jobs:
           submodules: false
       - name: Resolve python-build-standalone artifact
         run: |
-          variant="${{ inputs.pbs_variant }}"
+          variant="${PBS_VARIANT}"
           case "$variant" in
             x86_64)    sha="${PBS_SHA256_X86_64}";    suffix=py315 ;;
             x86_64_v3) sha="${PBS_SHA256_X86_64_V3}"; suffix=py315-v3 ;;
@@ -94,7 +118,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Pull base image and record its digest
         run: |
-          base="${{ inputs.base_image }}"
+          base="${BASE_IMAGE}"
           docker pull "$base"
           digest="$(docker image inspect -f '{{index .RepoDigests 0}}' "$base")"
           echo "BASE_DIGEST=${digest}" >> "$GITHUB_ENV"
@@ -103,12 +127,12 @@ jobs:
         run: |
           docker build \
             -f experiments/py315-jit/Dockerfile \
-            --build-arg "BASE_IMAGE=${{ inputs.base_image }}" \
+            --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
             --build-arg "PBS_URL=${PBS_URL}" \
             --build-arg "PBS_SHA256=${PBS_SHA256}" \
-            --label "org.opencontainers.image.base.name=${{ inputs.base_image }}" \
+            --label "org.opencontainers.image.base.name=${BASE_IMAGE}" \
             --label "org.opencontainers.image.base.digest=${BASE_DIGEST#*@}" \
-            --label "org.opencontainers.image.python-runtime=python-build-standalone ${PBS_PYTHON}+${PBS_RELEASE} ${{ inputs.pbs_variant }}" \
+            --label "org.opencontainers.image.python-runtime=python-build-standalone ${PBS_PYTHON}+${PBS_RELEASE} ${PBS_VARIANT}" \
             -t frappe-granian:latest \
             experiments/py315-jit
       - name: Verify interpreter, JIT and compiled dependencies
@@ -131,7 +155,7 @@ jobs:
       - name: Common compose/OTEL/CRUD contract (latest-granian)
         run: bash scripts/ci/matrix-variant-test.sh latest-granian
       - name: Publish experimental tag to GHCR
-        if: ${{ inputs.push_to_registry }}
+        if: ${{ inputs.push_to_registry == true }}
         run: |
           source scripts/ci/common.sh
           version="$(image_frappe_version frappe-granian:latest)"
